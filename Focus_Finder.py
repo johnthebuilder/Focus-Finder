@@ -850,6 +850,13 @@ def main():
     main_points = np.array([[0, 0]])
     sub_points = np.array([[0, 0]])
     
+    # Initialize all variables early
+    show_rays = False
+    num_rays = 3
+    ray_spacing = 1.0
+    ray_angle = -70.0
+    ray_start_distance = 10.0
+    
     if input_method == "DXF Upload":
         st.sidebar.subheader("📁 File Upload")
         
