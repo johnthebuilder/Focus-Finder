@@ -1033,6 +1033,15 @@ def main():
         else:
             st.warning("Could not determine foci")
         
+        if sub_params is not None:
+            st.write("**Ellipse Parameters:**")
+            h, k, a, b = sub_params
+            st.write(f"Center: ({h:.3f}, {k:.3f})")
+            st.write(f"Semi-major axis (a): {a:.3f}")
+            st.write(f"Semi-minor axis (b): {b:.3f}")
+            eccentricity = np.sqrt(1 - (b**2)/(a**2)) if a > 0 else 0
+            st.write(f"Eccentricity: {eccentricity:.3f}")
+        
         # Ray tracing results
         if show_rays and ray_data:
             st.subheader("Ray Tracing")
