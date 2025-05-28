@@ -10,7 +10,7 @@ import re
 
 # Configure page
 st.set_page_config(
-    page_title="Dual Reflector Focus Finder",
+    page_title="Dual Reflector Focus Finder v2.1",  # Version bump to force refresh
     page_icon="📡",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -939,13 +939,13 @@ def create_reflector_plot(main_points, sub_points, main_type, sub_type,
 
 def main():
     # Header
-    st.markdown('<h1 class="main-header">📡 Dual Reflector Focus Finder</h1>', 
+    st.markdown('<h1 class="main-header">📡 Dual Reflector Focus Finder v2.1</h1>', 
                 unsafe_allow_html=True)
     
     st.markdown("""
     <div class="info-box" style="background-color: #2d3142; color: #ffffff; border: 1px solid #4a4e69;">
-    <strong>Purpose:</strong> Analyze dual reflector antenna systems (Cassegrain/Gregorian) to find focus points.
-    Upload DXF files with 2D projected curves or input points manually.
+    <strong>🔄 Updated:</strong> Fixed focus calculation and ray tracing for dish reflectors.
+    Upload DXF files or use polynomial coefficients for optimized antenna surfaces.
     </div>
     """, unsafe_allow_html=True)
     
