@@ -36,7 +36,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 def parse_dxf_points(dxf_content):
-    """Extract points from DXF content - simplified parser for LWPOLYLINE and LINE entities"""
+    """Extract points from DXF content - parser for LWPOLYLINE, LINE, and SPLINE entities"""
     points = []
     lines = dxf_content.split('\n')
     
@@ -44,13 +44,39 @@ def parse_dxf_points(dxf_content):
     while i < len(lines):
         line = lines[i].strip()
         
-        # Look for LWPOLYLINE or LINE entities
-        if line == 'LWPOLYLINE' or line == 'LINE':
-            entity_start = i
+        # Look for SPLINE entities (most common from CAD exports)
+        if line == 'SPLINE':
             i += 1
-            
+            # Parse SPLINE control points
+            while i < len(lines):
+                if lines[i].strip() == '10':  # X coordinate code for control points
+                    if i + 1 < len(lines):
+                        try:
+                            x = float(lines[i + 1].strip())
+                            i += 2
+                            # Look for corresponding Y coordinate (code 20)
+                            if i < len(lines) and lines[i].strip() == '20':
+                                if i + 1 < len(lines):
+                                    y = float(lines[i + 1].strip())
+                                    points.append([x, y])
+                                    i += 2
+                                else:
+                                    i += 1
+                            else:
+                                continue
+                        except ValueError:
+                            i += 1
+                else:
+                    i += 1
+                    # Break if we hit another entity or end of section
+                    if i < len(lines) and lines[i].strip() in ['SPLINE', 'LWPOLYLINE', 'LINE', 'CIRCLE', 'ARC', 'ENDSEC']:
+                        break
+        
+        # Look for LWPOLYLINE or LINE entities
+        elif line == 'LWPOLYLINE' or line == 'LINE':
+            i += 1
             # Parse coordinates within this entity
-            while i < len(lines) and not lines[i].strip().startswith('ENDSEC'):
+            while i < len(lines):
                 if lines[i].strip() == '10':  # X coordinate code
                     if i + 1 < len(lines):
                         try:
@@ -70,10 +96,9 @@ def parse_dxf_points(dxf_content):
                             i += 1
                 else:
                     i += 1
-                
-                # Break if we hit another entity
-                if i < len(lines) and lines[i].strip() in ['LWPOLYLINE', 'LINE', 'CIRCLE', 'ARC']:
-                    break
+                    # Break if we hit another entity
+                    if i < len(lines) and lines[i].strip() in ['LWPOLYLINE', 'LINE', 'CIRCLE', 'ARC', 'SPLINE', 'ENDSEC']:
+                        break
         else:
             i += 1
     
