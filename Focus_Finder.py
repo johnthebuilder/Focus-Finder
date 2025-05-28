@@ -193,8 +193,172 @@ def fit_ellipse(points):
     except:
         return None, None
 
+def rotate_points(points, angle_deg):
+    """Rotate points by angle_deg around origin"""
+    if len(points) == 0:
+        return points
+    
+    angle_rad = np.radians(angle_deg)
+    cos_a = np.cos(angle_rad)
+    sin_a = np.sin(angle_rad)
+    
+    # Rotation matrix
+    rotation_matrix = np.array([
+        [cos_a, -sin_a],
+        [sin_a, cos_a]
+    ])
+    
+    return np.dot(points, rotation_matrix.T)
+
+def mirror_curve(points, axis='x'):
+    """Mirror curve across axis to create full reflector profile"""
+    if len(points) == 0:
+        return points
+    
+    if axis == 'x':
+        # Mirror across x-axis (flip y coordinates)
+        mirrored = points.copy()
+        mirrored[:, 1] = -mirrored[:, 1]
+    else:  # axis == 'y'
+        # Mirror across y-axis (flip x coordinates)
+        mirrored = points.copy()
+        mirrored[:, 0] = -mirrored[:, 0]
+    
+    # Combine original and mirrored, removing duplicate center point if exists
+    if np.allclose(points[0], [points[0, 0], 0]) or np.allclose(points[-1], [points[-1, 0], 0]):
+        # Remove the center point from mirrored to avoid duplication
+        if axis == 'x':
+            mirrored = mirrored[1:] if abs(mirrored[0, 1]) < 1e-6 else mirrored
+        else:
+            mirrored = mirrored[1:] if abs(mirrored[0, 0]) < 1e-6 else mirrored
+    
+    # Combine: original + mirrored (reversed order for smooth curve)
+    full_curve = np.vstack([points, mirrored[::-1]])
+    return full_curve
+
+def reflect_ray(incident_dir, normal):
+    """Calculate reflected ray direction using law of reflection"""
+    # R = I - 2(I·N)N where I is incident, N is normal, R is reflected
+    incident_dir = np.array(incident_dir)
+    normal = np.array(normal)
+    
+    # Ensure normal is normalized
+    normal = normal / np.linalg.norm(normal)
+    
+    dot_product = np.dot(incident_dir, normal)
+    reflected = incident_dir - 2 * dot_product * normal
+    
+    return reflected / np.linalg.norm(reflected)
+
+def get_surface_normal(points, index):
+    """Calculate surface normal at a point on the curve"""
+    if index == 0:
+        # Use forward difference at start
+        dx = points[1, 0] - points[0, 0]
+        dy = points[1, 1] - points[0, 1]
+    elif index == len(points) - 1:
+        # Use backward difference at end
+        dx = points[-1, 0] - points[-2, 0]
+        dy = points[-1, 1] - points[-2, 1]
+    else:
+        # Use central difference in middle
+        dx = points[index + 1, 0] - points[index - 1, 0]
+        dy = points[index + 1, 1] - points[index - 1, 1]
+    
+    # Tangent vector
+    tangent = np.array([dx, dy])
+    tangent = tangent / np.linalg.norm(tangent)
+    
+    # Normal is perpendicular to tangent (rotate 90 degrees)
+    normal = np.array([-tangent[1], tangent[0]])
+    
+    return normal
+
+def trace_ray_path(start_point, direction, main_points, sub_points, max_length=1000):
+    """Trace a ray through the dual reflector system"""
+    ray_path = [start_point]
+    current_pos = np.array(start_point)
+    current_dir = np.array(direction)
+    current_dir = current_dir / np.linalg.norm(current_dir)
+    
+    # Trace ray to main reflector
+    main_hit, main_index = find_ray_intersection(current_pos, current_dir, main_points)
+    
+    if main_hit is not None:
+        ray_path.append(main_hit)
+        
+        # Calculate reflection off main reflector
+        main_normal = get_surface_normal(main_points, main_index)
+        reflected_dir = reflect_ray(current_dir, main_normal)
+        
+        # Trace reflected ray to sub reflector
+        sub_hit, sub_index = find_ray_intersection(main_hit, reflected_dir, sub_points)
+        
+        if sub_hit is not None:
+            ray_path.append(sub_hit)
+            
+            # Calculate reflection off sub reflector
+            sub_normal = get_surface_normal(sub_points, sub_index)
+            final_dir = reflect_ray(reflected_dir, sub_normal)
+            
+            # Extend final ray
+            final_point = sub_hit + final_dir * 50  # Extend 50 units
+            ray_path.append(final_point)
+    
+    return ray_path
+
+def find_ray_intersection(ray_start, ray_dir, curve_points):
+    """Find intersection of ray with curve using line-segment intersection"""
+    ray_start = np.array(ray_start)
+    ray_dir = np.array(ray_dir)
+    
+    min_distance = float('inf')
+    closest_point = None
+    closest_index = None
+    
+    # Check intersection with each line segment of the curve
+    for i in range(len(curve_points) - 1):
+        p1 = curve_points[i]
+        p2 = curve_points[i + 1]
+        
+        # Parametric line equations:
+        # Ray: ray_start + t * ray_dir
+        # Segment: p1 + s * (p2 - p1), where 0 <= s <= 1
+        
+        # Solve: ray_start + t * ray_dir = p1 + s * (p2 - p1)
+        seg_dir = p2 - p1
+        
+        # Set up system of equations
+        # ray_start[0] + t * ray_dir[0] = p1[0] + s * seg_dir[0]
+        # ray_start[1] + t * ray_dir[1] = p1[1] + s * seg_dir[1]
+        
+        # Rearrange to matrix form: [ray_dir, -seg_dir] * [t, s]^T = p1 - ray_start
+        A = np.array([[ray_dir[0], -seg_dir[0]], 
+                      [ray_dir[1], -seg_dir[1]]])
+        b = p1 - ray_start
+        
+        try:
+            if abs(np.linalg.det(A)) > 1e-10:  # Non-parallel lines
+                params = np.linalg.solve(A, b)
+                t, s = params[0], params[1]
+                
+                # Check if intersection is valid (forward ray, within segment)
+                if t > 1e-6 and 0 <= s <= 1:  # t > small epsilon to avoid self-intersection
+                    intersection = ray_start + t * ray_dir
+                    distance = t
+                    
+                    if distance < min_distance:
+                        min_distance = distance
+                        closest_point = intersection
+                        closest_index = i
+        except np.linalg.LinAlgError:
+            continue
+    
+    return closest_point, closest_index
+
 def create_reflector_plot(main_points, sub_points, main_type, sub_type, 
-                         main_focus, sub_foci, show_rays=False):
+                         main_focus, sub_foci, show_rays=False, ray_data=None,
+                         show_mirror=False):
     """Create interactive plot of dual reflector system"""
     
     fig = go.Figure()
@@ -207,8 +371,20 @@ def create_reflector_plot(main_points, sub_points, main_type, sub_type,
             mode='lines+markers',
             name=f'Main Reflector ({main_type})',
             line=dict(color='blue', width=3),
-            marker=dict(size=4)
+            marker=dict(size=3)
         ))
+        
+        # Show mirrored version if requested
+        if show_mirror:
+            mirrored_main = mirror_curve(main_points, 'x')
+            fig.add_trace(go.Scatter(
+                x=mirrored_main[:, 0],
+                y=mirrored_main[:, 1],
+                mode='lines',
+                name='Main (Full Profile)',
+                line=dict(color='lightblue', width=2, dash='dash'),
+                showlegend=False
+            ))
     
     # Plot sub reflector
     if len(sub_points) > 0:
@@ -218,8 +394,20 @@ def create_reflector_plot(main_points, sub_points, main_type, sub_type,
             mode='lines+markers',
             name=f'Sub Reflector ({sub_type})',
             line=dict(color='red', width=3),
-            marker=dict(size=4)
+            marker=dict(size=3)
         ))
+        
+        # Show mirrored version if requested
+        if show_mirror:
+            mirrored_sub = mirror_curve(sub_points, 'x')
+            fig.add_trace(go.Scatter(
+                x=mirrored_sub[:, 0],
+                y=mirrored_sub[:, 1],
+                mode='lines',
+                name='Sub (Full Profile)',
+                line=dict(color='pink', width=2, dash='dash'),
+                showlegend=False
+            ))
     
     # Plot main reflector focus
     if main_focus is not None:
@@ -250,19 +438,37 @@ def create_reflector_plot(main_points, sub_points, main_type, sub_type,
                 marker=dict(size=10, color='orange', symbol='diamond')
             ))
     
-    # Add ray tracing if requested
-    if show_rays and main_focus is not None and sub_foci is not None:
-        # Simple ray tracing example - you can expand this
-        for i in range(0, len(main_points), max(1, len(main_points)//10)):
-            point = main_points[i]
-            # Draw ray from focus to main reflector point
-            fig.add_trace(go.Scatter(
-                x=[main_focus[0], point[0]],
-                y=[main_focus[1], point[1]],
-                mode='lines',
-                line=dict(color='lightblue', width=1, dash='dash'),
-                showlegend=False
-            ))
+    # Plot ray paths
+    if ray_data is not None and len(ray_data) > 0:
+        for i, ray_path in enumerate(ray_data):
+            if len(ray_path) > 1:
+                ray_x = [p[0] for p in ray_path]
+                ray_y = [p[1] for p in ray_path]
+                
+                fig.add_trace(go.Scatter(
+                    x=ray_x,
+                    y=ray_y,
+                    mode='lines+markers',
+                    name=f'Ray {i+1}' if len(ray_data) <= 5 else None,
+                    line=dict(color='lime', width=2),
+                    marker=dict(size=4, color='lime'),
+                    showlegend=(i < 5)  # Only show legend for first 5 rays
+                ))
+    
+    # Add axis of symmetry
+    if len(main_points) > 0 or len(sub_points) > 0:
+        all_points = np.vstack([p for p in [main_points, sub_points] if len(p) > 0])
+        y_min, y_max = np.min(all_points[:, 1]), np.max(all_points[:, 1])
+        y_range = y_max - y_min
+        
+        fig.add_trace(go.Scatter(
+            x=[0, 0],
+            y=[y_min - y_range*0.1, y_max + y_range*0.1],
+            mode='lines',
+            name='Axis of Symmetry',
+            line=dict(color='gray', width=1, dash='dot'),
+            showlegend=False
+        ))
     
     fig.update_layout(
         title='Dual Reflector System Analysis',
@@ -428,8 +634,35 @@ def main():
             y_ell = ell_k + ell_b * np.sin(theta)
             sub_points = np.column_stack([x_ell, y_ell])
     
-    # Reflector type selection
+    # Reflector type selection and orientation
     st.sidebar.header("🔍 Analysis Options")
+    
+    # Rotation controls
+    st.sidebar.subheader("🔄 Orientation")
+    main_rotation = st.sidebar.slider(
+        "Main Reflector Rotation (°):",
+        min_value=-180,
+        max_value=180,
+        value=0,
+        step=5,
+        help="Rotate main reflector curve"
+    )
+    
+    sub_rotation = st.sidebar.slider(
+        "Sub Reflector Rotation (°):",
+        min_value=-180,
+        max_value=180,
+        value=0,
+        step=5,
+        help="Rotate sub reflector curve"
+    )
+    
+    # Apply rotations
+    if main_rotation != 0:
+        main_points = rotate_points(main_points, main_rotation)
+    
+    if sub_rotation != 0:
+        sub_points = rotate_points(sub_points, sub_rotation)
     
     main_type = st.sidebar.selectbox(
         "Main Reflector Type:",
@@ -441,7 +674,53 @@ def main():
         ["Hyperbola", "Ellipse", "Parabola"]
     )
     
-    show_rays = st.sidebar.checkbox("Show Ray Tracing", value=False)
+    # Mirroring option
+    show_mirror = st.sidebar.checkbox(
+        "Show Full Profile (Mirrored)",
+        value=True,
+        help="Show complete reflector by mirroring curve across x-axis"
+    )
+    
+    # Ray tracing controls
+    st.sidebar.subheader("🌟 Ray Tracing")
+    show_rays = st.sidebar.checkbox("Enable Ray Tracing", value=False)
+    
+    if show_rays:
+        num_rays = st.sidebar.slider(
+            "Number of Rays:",
+            min_value=1,
+            max_value=10,
+            value=3,
+            help="Number of parallel rays to trace"
+        )
+        
+        ray_spacing = st.sidebar.slider(
+            "Ray Spacing:",
+            min_value=1.0,
+            max_value=20.0,
+            value=5.0,
+            step=1.0,
+            help="Spacing between parallel rays"
+        )
+        
+        ray_angle = st.sidebar.slider(
+            "Incident Angle (°):",
+            min_value=-45.0,
+            max_value=45.0,
+            value=0.0,
+            step=1.0,
+            help="Angle of incoming rays (0° = horizontal)"
+        )
+        
+        ray_start_distance = st.sidebar.slider(
+            "Ray Start Distance:",
+            min_value=50.0,
+            max_value=200.0,
+            value=100.0,
+            step=10.0,
+            help="Distance to start rays from reflectors"
+        )
+    
     show_fits = st.sidebar.checkbox("Show Curve Fits", value=True)
     
     # Main content area
@@ -472,10 +751,36 @@ def main():
         elif sub_type == "Ellipse":
             sub_foci, sub_params = fit_ellipse(sub_points)
         
+        # Generate ray data if ray tracing is enabled
+        ray_data = None
+        if show_rays and len(main_points) > 0 and len(sub_points) > 0:
+            ray_data = []
+            
+            # Calculate ray starting positions
+            all_points = np.vstack([main_points, sub_points])
+            x_min, x_max = np.min(all_points[:, 0]), np.max(all_points[:, 0])
+            y_min, y_max = np.min(all_points[:, 1]), np.max(all_points[:, 1])
+            
+            # Ray direction from angle
+            ray_angle_rad = np.radians(ray_angle)
+            ray_direction = [np.cos(ray_angle_rad), np.sin(ray_angle_rad)]
+            
+            # Starting positions for parallel rays
+            center_y = (y_min + y_max) / 2
+            start_x = x_min - ray_start_distance
+            
+            for i in range(num_rays):
+                offset = (i - num_rays // 2) * ray_spacing
+                start_point = [start_x, center_y + offset]
+                
+                ray_path = trace_ray_path(start_point, ray_direction, main_points, sub_points)
+                if len(ray_path) > 1:
+                    ray_data.append(ray_path)
+        
         # Create plot
         fig = create_reflector_plot(
             main_points, sub_points, main_type, sub_type,
-            main_focus, sub_foci, show_rays
+            main_focus, sub_foci, show_rays, ray_data, show_mirror
         )
         
         st.plotly_chart(fig, use_container_width=True)
@@ -551,6 +856,8 @@ def main():
         st.subheader("Main Reflector")
         st.write(f"**Type:** {main_type}")
         st.write(f"**Points:** {len(main_points)}")
+        if main_rotation != 0:
+            st.write(f"**Rotation:** {main_rotation}°")
         
         if main_focus is not None:
             if isinstance(main_focus, tuple) and len(main_focus) == 2 and not isinstance(main_focus[0], tuple):
@@ -570,6 +877,164 @@ def main():
         
         # Display sub reflector results
         st.subheader("Sub Reflector")
+        st.write(f"**Type:** {sub_type}")
+        st.write(f"**Points:** {len(sub_points)}")
+        if sub_rotation != 0:
+            st.write(f"**Rotation:** {sub_rotation}°")
+        
+        if sub_foci is not None:
+            if isinstance(sub_foci[0], tuple):  # Two foci
+                st.success(f"**Focus 1:** ({sub_foci[0][0]:.3f}, {sub_foci[0][1]:.3f})")
+                st.success(f"**Focus 2:** ({sub_foci[1][0]:.3f}, {sub_foci[1][1]:.3f})")
+                
+                # Calculate distance between foci
+                dist = np.sqrt((sub_foci[1][0] - sub_foci[0][0])**2 + 
+                              (sub_foci[1][1] - sub_foci[0][1])**2)
+                st.info(f"**Focal Distance:** {dist:.3f}")
+            else:  # Single focus
+                st.success(f"**Focus:** ({sub_foci[0]:.3f}, {sub_foci[1]:.3f})")
+        else:
+            st.warning("Could not determine foci")
+        
+        # Ray tracing results
+        if show_rays and ray_data:
+            st.subheader("Ray Tracing")
+            st.write(f"**Rays Traced:** {len(ray_data)}")
+            st.write(f"**Incident Angle:** {ray_angle}°")
+            
+            # Analyze ray convergence
+            final_points = []
+            for ray_path in ray_data:
+                if len(ray_path) >= 4:  # Start, main hit, sub hit, final
+                    final_points.append(ray_path[-1])
+            
+            if len(final_points) > 1:
+                final_points = np.array(final_points)
+                convergence_x = np.std(final_points[:, 0])
+                convergence_y = np.std(final_points[:, 1])
+                st.info(f"**Convergence (σx):** {convergence_x:.3f}")
+                st.info(f"**Convergence (σy):** {convergence_y:.3f}")
+        
+        # System analysis
+        st.subheader("System Analysis")
+        
+        if main_focus is not None and sub_foci is not None:
+            # Analyze focal relationships
+            if isinstance(main_focus, tuple) and len(main_focus) == 2 and not isinstance(main_focus[0], tuple):
+                main_f = main_focus
+            else:
+                main_f = None
+            
+            if isinstance(sub_foci[0], tuple):
+                # Check if main focus coincides with either sub focus
+                for i, sub_f in enumerate(sub_foci):
+                    if main_f is not None:
+                        dist = np.sqrt((main_f[0] - sub_f[0])**2 + (main_f[1] - sub_f[1])**2)
+                        if dist < 1.0:  # Tolerance
+                            st.success(f"✅ Main focus aligns with sub focus {i+1}")
+                            st.write(f"Distance: {dist:.3f}")
+                        else:
+                            st.info(f"Distance to sub focus {i+1}: {dist:.3f}")
+            
+            # Determine system type
+            if sub_type == "Hyperbola":
+                st.write("**System Type:** Cassegrain")
+            elif sub_type == "Ellipse":
+                st.write("**System Type:** Gregorian")
+        
+        # Data quality metrics
+        st.subheader("Data Quality")
+        
+        if len(main_points) > 0:
+            main_range_x = np.ptp(main_points[:, 0])
+            main_range_y = np.ptp(main_points[:, 1])
+            st.write(f"Main X range: {main_range_x:.2f}")
+            st.write(f"Main Y range: {main_range_y:.2f}")
+        
+        if len(sub_points) > 0:
+            sub_range_x = np.ptp(sub_points[:, 0])
+            sub_range_y = np.ptp(sub_points[:, 1])
+            st.write(f"Sub X range: {sub_range_x:.2f}")
+            st.write(f"Sub Y range: {sub_range_y:.2f}")("Sub Reflector")
+        st.write(f"**Type:** {sub_type}")
+        st.write(f"**Points:** {len(sub_points)}")
+        if sub_rotation != 0:
+            st.write(f"**Rotation:** {sub_rotation}°")
+        
+        if sub_foci is not None:
+            if isinstance(sub_foci[0], tuple):  # Two foci
+                st.success(f"**Focus 1:** ({sub_foci[0][0]:.3f}, {sub_foci[0][1]:.3f})")
+                st.success(f"**Focus 2:** ({sub_foci[1][0]:.3f}, {sub_foci[1][1]:.3f})")
+                
+                # Calculate distance between foci
+                dist = np.sqrt((sub_foci[1][0] - sub_foci[0][0])**2 + 
+                              (sub_foci[1][1] - sub_foci[0][1])**2)
+                st.info(f"**Focal Distance:** {dist:.3f}")
+            else:  # Single focus
+                st.success(f"**Focus:** ({sub_foci[0]:.3f}, {sub_foci[1]:.3f})")
+        else:
+            st.warning("Could not determine foci")
+        
+        # Ray tracing results
+        if show_rays and ray_data:
+            st.subheader("Ray Tracing")
+            st.write(f"**Rays Traced:** {len(ray_data)}")
+            st.write(f"**Incident Angle:** {ray_angle}°")
+            
+            # Analyze ray convergence
+            final_points = []
+            for ray_path in ray_data:
+                if len(ray_path) >= 4:  # Start, main hit, sub hit, final
+                    final_points.append(ray_path[-1])
+            
+            if len(final_points) > 1:
+                final_points = np.array(final_points)
+                convergence_x = np.std(final_points[:, 0])
+                convergence_y = np.std(final_points[:, 1])
+                st.info(f"**Convergence (σx):** {convergence_x:.3f}")
+                st.info(f"**Convergence (σy):** {convergence_y:.3f}")
+        
+        # System analysis
+        st.subheader("System Analysis")
+        
+        if main_focus is not None and sub_foci is not None:
+            # Analyze focal relationships
+            if isinstance(main_focus, tuple) and len(main_focus) == 2 and not isinstance(main_focus[0], tuple):
+                main_f = main_focus
+            else:
+                main_f = None
+            
+            if isinstance(sub_foci[0], tuple):
+                # Check if main focus coincides with either sub focus
+                for i, sub_f in enumerate(sub_foci):
+                    if main_f is not None:
+                        dist = np.sqrt((main_f[0] - sub_f[0])**2 + (main_f[1] - sub_f[1])**2)
+                        if dist < 1.0:  # Tolerance
+                            st.success(f"✅ Main focus aligns with sub focus {i+1}")
+                            st.write(f"Distance: {dist:.3f}")
+                        else:
+                            st.info(f"Distance to sub focus {i+1}: {dist:.3f}")
+            
+            # Determine system type
+            if sub_type == "Hyperbola":
+                st.write("**System Type:** Cassegrain")
+            elif sub_type == "Ellipse":
+                st.write("**System Type:** Gregorian")
+        
+        # Data quality metrics
+        st.subheader("Data Quality")
+        
+        if len(main_points) > 0:
+            main_range_x = np.ptp(main_points[:, 0])
+            main_range_y = np.ptp(main_points[:, 1])
+            st.write(f"Main X range: {main_range_x:.2f}")
+            st.write(f"Main Y range: {main_range_y:.2f}")
+        
+        if len(sub_points) > 0:
+            sub_range_x = np.ptp(sub_points[:, 0])
+            sub_range_y = np.ptp(sub_points[:, 1])
+            st.write(f"Sub X range: {sub_range_x:.2f}")
+            st.write(f"Sub Y range: {sub_range_y:.2f}")("Sub Reflector")
         st.write(f"**Type:** {sub_type}")
         st.write(f"**Points:** {len(sub_points)}")
         
