@@ -382,7 +382,7 @@ def create_reflector_plot(main_points, sub_points, main_type, sub_type,
     
     fig = go.Figure()
     
-    # Plot main reflector
+    # Plot main reflector - original curve only
     if len(main_points) > 0:
         fig.add_trace(go.Scatter(
             x=main_points[:, 0],
@@ -392,20 +392,8 @@ def create_reflector_plot(main_points, sub_points, main_type, sub_type,
             line=dict(color='blue', width=3),
             marker=dict(size=3)
         ))
-        
-        # Show mirrored version if requested
-        if show_mirror:
-            mirrored_main = mirror_curve(main_points, 'x')
-            fig.add_trace(go.Scatter(
-                x=mirrored_main[:, 0],
-                y=mirrored_main[:, 1],
-                mode='lines',
-                name='Main (Full Profile)',
-                line=dict(color='lightblue', width=2, dash='dash'),
-                showlegend=False
-            ))
     
-    # Plot sub reflector
+    # Plot sub reflector - original curve only
     if len(sub_points) > 0:
         fig.add_trace(go.Scatter(
             x=sub_points[:, 0],
@@ -415,18 +403,6 @@ def create_reflector_plot(main_points, sub_points, main_type, sub_type,
             line=dict(color='red', width=3),
             marker=dict(size=3)
         ))
-        
-        # Show mirrored version if requested
-        if show_mirror:
-            mirrored_sub = mirror_curve(sub_points, 'x')
-            fig.add_trace(go.Scatter(
-                x=mirrored_sub[:, 0],
-                y=mirrored_sub[:, 1],
-                mode='lines',
-                name='Sub (Full Profile)',
-                line=dict(color='pink', width=2, dash='dash'),
-                showlegend=False
-            ))
     
     # Plot main reflector focus
     if main_focus is not None:
@@ -490,7 +466,7 @@ def create_reflector_plot(main_points, sub_points, main_type, sub_type,
         ))
     
     fig.update_layout(
-        title='Dual Reflector System Analysis',
+        title='Dual Reflector System Analysis - Original Curves',
         xaxis_title='X (mm)',
         yaxis_title='Y (mm)',
         template='plotly_dark',
@@ -682,12 +658,12 @@ def main():
         main_points = rotate_points(main_points, global_rotation)
         sub_points = rotate_points(sub_points, global_rotation)
     
-    # Mirroring option
-    show_mirror = st.sidebar.checkbox(
-        "Show Full Profile (Mirrored)",
-        value=True,
-        help="Show complete reflector by mirroring curve across x-axis"
-    )
+    # Mirroring option - removed
+    # show_mirror = st.sidebar.checkbox(
+    #     "Show Full Profile (Mirrored)",
+    #     value=True,
+    #     help="Show complete reflector by mirroring curve across x-axis"
+    # )
     
     # Ray tracing controls
     st.sidebar.subheader("🌟 Ray Tracing")
@@ -802,7 +778,7 @@ def main():
         # Create plot
         fig = create_reflector_plot(
             main_points, sub_points, main_type, sub_type,
-            main_focus, sub_foci, show_rays, ray_data, show_mirror
+            main_focus, sub_foci, show_rays, ray_data, show_mirror=False
         )
         
         st.plotly_chart(fig, use_container_width=True)
