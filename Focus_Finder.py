@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
-from scipy.optimize import minimize_scalar, curve_fit
+from scipy.optimize import minimize_scalar, curve_fit, least_squares
 from scipy.spatial.distance import cdist
 import io
 import re
@@ -104,6 +104,23 @@ def parse_dxf_points(dxf_content):
     
     return np.array(points) if points else np.array([[0, 0]])
 
+def rotate_points(points, angle_deg):
+    """Rotate points by angle_deg around origin"""
+    if len(points) == 0:
+        return points
+    
+    angle_rad = np.radians(angle_deg)
+    cos_a = np.cos(angle_rad)
+    sin_a = np.sin(angle_rad)
+    
+    # Rotation matrix
+    rotation_matrix = np.array([
+        [cos_a, -sin_a],
+        [sin_a, cos_a]
+    ])
+    
+    return np.dot(points, rotation_matrix.T)
+
 def fit_parabola(points):
     """Fit parabola to points - handles both orientations"""
     if len(points) < 3:
@@ -152,37 +169,8 @@ def fit_parabola(points):
     except:
         return None, None
 
-def fit_hyperbola(points):
-    """Fit hyperbola to points - simplified approach"""
-    if len(points) < 4:
-        return None, None
-    
-    try:
-        x = points[:, 0]
-        y = points[:, 1]
-        
-        # Try fitting (x-h)²/a² - (y-k)²/b² = 1
-        # This is a simplified approach - for complex hyperbolas, more sophisticated fitting is needed
-        
-        # Estimate center
-        h = np.mean(x)
-        k = np.mean(y)
-        
-        # Rough estimates for a and b
-        a = np.std(x)
-        b = np.std(y)
-        
-        # Calculate foci (approximately)
-        c = np.sqrt(a**2 + b**2)
-        focus1 = (h - c, k)
-        focus2 = (h + c, k)
-        
-        return (focus1, focus2), (h, k, a, b)
-    except:
-        return None, None
-
-def fit_ellipse(points):
-    """Fit ellipse to points using least squares method"""
+def fit_ellipse_robust(points):
+    """Robust ellipse fitting using direct least squares method"""
     if len(points) < 5:
         return None, None
     
@@ -190,93 +178,89 @@ def fit_ellipse(points):
         x = points[:, 0]
         y = points[:, 1]
         
-        # Algebraic ellipse fitting: Ax² + Bxy + Cy² + Dx + Ey + F = 0
-        # Set up the design matrix for least squares
-        D = np.column_stack([x*x, x*y, y*y, x, y, np.ones(len(x))])
+        # Center the data
+        x_mean = np.mean(x)
+        y_mean = np.mean(y)
+        x_centered = x - x_mean
+        y_centered = y - y_mean
         
-        # Solve the constraint B² - 4AC < 0 (ellipse condition)
-        # Use the constraint 4AC - B² = 1
-        S = D.T @ D
-        C = np.zeros((6, 6))
-        C[0, 2] = 2
-        C[1, 1] = -1
-        C[2, 0] = 2
+        # Use direct least squares fitting for ellipse
+        # Fit: Ax² + Bxy + Cy² + Dx + Ey + F = 0 with constraint B²-4AC < 0
         
-        # Solve generalized eigenvalue problem
-        try:
-            from scipy.linalg import eig
-            eigenvals, eigenvecs = eig(S, C)
-            
-            # Find the eigenvector with positive eigenvalue
-            pos_idx = None
-            for i, val in enumerate(eigenvals):
-                if np.isreal(val) and val > 0:
-                    pos_idx = i
-                    break
-            
-            if pos_idx is None:
-                # Fallback to simple ellipse fitting
-                return fit_ellipse_simple(points)
-            
-            coeffs = np.real(eigenvecs[:, pos_idx])
-            A, B, C, D, E, F = coeffs
-            
-        except:
-            # Fallback to simple method
+        # Design matrix
+        D = np.column_stack([
+            x_centered**2,      # A
+            x_centered * y_centered,  # B
+            y_centered**2,      # C
+            x_centered,         # D
+            y_centered,         # E
+            np.ones(len(x))     # F
+        ])
+        
+        # Constraint: 4AC - B² = 1 (ellipse constraint)
+        # Use SVD to solve constrained problem
+        U, s, Vt = np.linalg.svd(D)
+        
+        # Take the smallest singular vector as solution
+        coeffs = Vt[-1, :]
+        A, B, C, D_coeff, E, F = coeffs
+        
+        # Ensure it's an ellipse (discriminant test)
+        discriminant = B**2 - 4*A*C
+        if discriminant >= 0:
+            # Try alternative fitting method
             return fit_ellipse_simple(points)
         
-        # Convert to center and axes form
+        # Convert to standard form
         # Calculate center
-        denom = B*B - 4*A*C
-        if abs(denom) < 1e-10:
+        denom = B**2 - 4*A*C
+        if abs(denom) < 1e-12:
             return fit_ellipse_simple(points)
-            
-        h = (2*C*D - B*E) / denom
-        k = (2*A*E - B*D) / denom
         
-        # Calculate semi-axes
-        num = 2*(A*E*E + C*D*D + F*B*B - 2*B*D*E - 4*A*C*F)
-        denom1 = (B*B - 4*A*C) * (np.sqrt((A-C)*(A-C) + B*B) - (A+C))
-        denom2 = (B*B - 4*A*C) * (-np.sqrt((A-C)*(A-C) + B*B) - (A+C))
+        h = (2*C*D_coeff - B*E) / denom + x_mean
+        k = (2*A*E - B*D_coeff) / denom + y_mean
         
-        if denom1 <= 0 or denom2 <= 0:
+        # Calculate semi-axes and rotation
+        theta = 0.5 * np.arctan2(B, A - C) if abs(A - C) > 1e-12 else 0
+        
+        # Transform to principal axes
+        cos_theta = np.cos(theta)
+        sin_theta = np.sin(theta)
+        
+        # Calculate eigenvalues to get axes lengths
+        M = np.array([[A, B/2], [B/2, C]])
+        eigenvals = np.linalg.eigvals(M)
+        
+        if np.any(eigenvals <= 0):
             return fit_ellipse_simple(points)
-            
-        a = np.sqrt(abs(num / denom1))  # semi-major axis
-        b = np.sqrt(abs(num / denom2))  # semi-minor axis
         
-        # Ensure a >= b
-        if b > a:
-            a, b = b, a
+        # Semi-axes lengths
+        sqrt_eig = np.sqrt(eigenvals)
+        a = max(sqrt_eig)  # semi-major axis
+        b = min(sqrt_eig)  # semi-minor axis
         
-        # Calculate foci
+        # Calculate focal distance
         if a > b:
-            c = np.sqrt(a*a - b*b)
-            # Rotation angle
-            if abs(B) < 1e-10:
-                angle = 0 if A < C else np.pi/2
-            else:
-                angle = 0.5 * np.arctan(2*B / (A - C))
-            
-            # Foci positions
-            focus1_x = h + c * np.cos(angle)
-            focus1_y = k + c * np.sin(angle)
-            focus2_x = h - c * np.cos(angle)
-            focus2_y = k - c * np.sin(angle)
-            
-            focus1 = (focus1_x, focus1_y)
-            focus2 = (focus2_x, focus2_y)
+            c_focal = np.sqrt(a**2 - b**2)
+            # Foci along major axis
+            focus1_x = h + c_focal * cos_theta
+            focus1_y = k + c_focal * sin_theta
+            focus2_x = h - c_focal * cos_theta
+            focus2_y = k - c_focal * sin_theta
         else:
-            focus1 = focus2 = (h, k)
+            focus1_x = focus2_x = h
+            focus1_y = focus2_y = k
         
-        return (focus1, focus2), (h, k, a, b)
+        focus1 = (focus1_x, focus1_y)
+        focus2 = (focus2_x, focus2_y)
+        
+        return (focus1, focus2), (h, k, a, b, theta)
         
     except Exception as e:
-        # Final fallback
         return fit_ellipse_simple(points)
 
 def fit_ellipse_simple(points):
-    """Simple ellipse fitting using bounding box approximation"""
+    """Simple ellipse fitting using bounding ellipse approximation"""
     try:
         x = points[:, 0]
         y = points[:, 1]
@@ -286,8 +270,8 @@ def fit_ellipse_simple(points):
         k = np.mean(y)
         
         # Estimate semi-axes from data spread
-        a = (np.max(x) - np.min(x)) / 2
-        b = (np.max(y) - np.min(y)) / 2
+        a = np.std(x) * 2  # Rough estimate
+        b = np.std(y) * 2
         
         # Ensure a >= b for proper focus calculation
         if b > a:
@@ -295,179 +279,16 @@ def fit_ellipse_simple(points):
             
         # Calculate foci
         if a > b and a > 0 and b > 0:
-            c = np.sqrt(a*a - b*b)
+            c = np.sqrt(a**2 - b**2)
             focus1 = (h + c, k)
             focus2 = (h - c, k)
         else:
             focus1 = focus2 = (h, k)
         
-        return (focus1, focus2), (h, k, a, b)
+        return (focus1, focus2), (h, k, a, b, 0)
         
     except:
         return None, None
-
-def rotate_points(points, angle_deg):
-    """Rotate points by angle_deg around origin"""
-    if len(points) == 0:
-        return points
-    
-    angle_rad = np.radians(angle_deg)
-    cos_a = np.cos(angle_rad)
-    sin_a = np.sin(angle_rad)
-    
-    # Rotation matrix
-    rotation_matrix = np.array([
-        [cos_a, -sin_a],
-        [sin_a, cos_a]
-    ])
-    
-    return np.dot(points, rotation_matrix.T)
-
-def mirror_curve(points, axis='x'):
-    """Mirror curve across axis to create full reflector profile"""
-    if len(points) == 0:
-        return points
-    
-    if axis == 'x':
-        # Mirror across x-axis (flip y coordinates)
-        mirrored = points.copy()
-        mirrored[:, 1] = -mirrored[:, 1]
-    else:  # axis == 'y'
-        # Mirror across y-axis (flip x coordinates)
-        mirrored = points.copy()
-        mirrored[:, 0] = -mirrored[:, 0]
-    
-    # Combine original and mirrored, removing duplicate center point if exists
-    if np.allclose(points[0], [points[0, 0], 0]) or np.allclose(points[-1], [points[-1, 0], 0]):
-        # Remove the center point from mirrored to avoid duplication
-        if axis == 'x':
-            mirrored = mirrored[1:] if abs(mirrored[0, 1]) < 1e-6 else mirrored
-        else:
-            mirrored = mirrored[1:] if abs(mirrored[0, 0]) < 1e-6 else mirrored
-    
-    # Combine: original + mirrored (reversed order for smooth curve)
-    full_curve = np.vstack([points, mirrored[::-1]])
-    return full_curve
-
-def reflect_ray(incident_dir, normal):
-    """Calculate reflected ray direction using law of reflection"""
-    # R = I - 2(I·N)N where I is incident, N is normal, R is reflected
-    incident_dir = np.array(incident_dir)
-    normal = np.array(normal)
-    
-    # Ensure normal is normalized
-    normal = normal / np.linalg.norm(normal)
-    
-    dot_product = np.dot(incident_dir, normal)
-    reflected = incident_dir - 2 * dot_product * normal
-    
-    return reflected / np.linalg.norm(reflected)
-
-def get_surface_normal(points, index):
-    """Calculate surface normal at a point on the curve"""
-    if index == 0:
-        # Use forward difference at start
-        dx = points[1, 0] - points[0, 0]
-        dy = points[1, 1] - points[0, 1]
-    elif index == len(points) - 1:
-        # Use backward difference at end
-        dx = points[-1, 0] - points[-2, 0]
-        dy = points[-1, 1] - points[-2, 1]
-    else:
-        # Use central difference in middle
-        dx = points[index + 1, 0] - points[index - 1, 0]
-        dy = points[index + 1, 1] - points[index - 1, 1]
-    
-    # Tangent vector
-    tangent = np.array([dx, dy])
-    tangent = tangent / np.linalg.norm(tangent)
-    
-    # Normal is perpendicular to tangent (rotate 90 degrees)
-    normal = np.array([-tangent[1], tangent[0]])
-    
-    return normal
-
-def trace_ray_path(start_point, direction, main_points, sub_points, max_length=1000):
-    """Trace a ray through the dual reflector system"""
-    ray_path = [start_point]
-    current_pos = np.array(start_point)
-    current_dir = np.array(direction)
-    current_dir = current_dir / np.linalg.norm(current_dir)
-    
-    # Trace ray to main reflector
-    main_hit, main_index = find_ray_intersection(current_pos, current_dir, main_points)
-    
-    if main_hit is not None:
-        ray_path.append(main_hit)
-        
-        # Calculate reflection off main reflector
-        main_normal = get_surface_normal(main_points, main_index)
-        reflected_dir = reflect_ray(current_dir, main_normal)
-        
-        # Trace reflected ray to sub reflector
-        sub_hit, sub_index = find_ray_intersection(main_hit, reflected_dir, sub_points)
-        
-        if sub_hit is not None:
-            ray_path.append(sub_hit)
-            
-            # Calculate reflection off sub reflector
-            sub_normal = get_surface_normal(sub_points, sub_index)
-            final_dir = reflect_ray(reflected_dir, sub_normal)
-            
-            # Extend final ray
-            final_point = sub_hit + final_dir * 50  # Extend 50 units
-            ray_path.append(final_point)
-    
-    return ray_path
-
-def find_ray_intersection(ray_start, ray_dir, curve_points):
-    """Find intersection of ray with curve using line-segment intersection"""
-    ray_start = np.array(ray_start)
-    ray_dir = np.array(ray_dir)
-    
-    min_distance = float('inf')
-    closest_point = None
-    closest_index = None
-    
-    # Check intersection with each line segment of the curve
-    for i in range(len(curve_points) - 1):
-        p1 = curve_points[i]
-        p2 = curve_points[i + 1]
-        
-        # Parametric line equations:
-        # Ray: ray_start + t * ray_dir
-        # Segment: p1 + s * (p2 - p1), where 0 <= s <= 1
-        
-        # Solve: ray_start + t * ray_dir = p1 + s * (p2 - p1)
-        seg_dir = p2 - p1
-        
-        # Set up system of equations
-        # ray_start[0] + t * ray_dir[0] = p1[0] + s * seg_dir[0]
-        # ray_start[1] + t * ray_dir[1] = p1[1] + s * seg_dir[1]
-        
-        # Rearrange to matrix form: [ray_dir, -seg_dir] * [t, s]^T = p1 - ray_start
-        A = np.array([[ray_dir[0], -seg_dir[0]], 
-                      [ray_dir[1], -seg_dir[1]]])
-        b = p1 - ray_start
-        
-        try:
-            if abs(np.linalg.det(A)) > 1e-10:  # Non-parallel lines
-                params = np.linalg.solve(A, b)
-                t, s = params[0], params[1]
-                
-                # Check if intersection is valid (forward ray, within segment)
-                if t > 1e-6 and 0 <= s <= 1:  # t > small epsilon to avoid self-intersection
-                    intersection = ray_start + t * ray_dir
-                    distance = t
-                    
-                    if distance < min_distance:
-                        min_distance = distance
-                        closest_point = intersection
-                        closest_index = i
-        except np.linalg.LinAlgError:
-            continue
-    
-    return closest_point, closest_index
 
 def generate_ellipse_curve(center, a, b, angle=0, num_points=100):
     """Generate full ellipse curve from parameters"""
@@ -494,7 +315,7 @@ def generate_ellipse_curve(center, a, b, angle=0, num_points=100):
 
 def create_reflector_plot(main_points, sub_points, main_type, sub_type, 
                          main_focus, sub_foci, show_rays=False, ray_data=None,
-                         show_mirror=False, sub_params=None):
+                         sub_params=None):
     """Create interactive plot of dual reflector system"""
     
     fig = go.Figure()
@@ -518,13 +339,18 @@ def create_reflector_plot(main_points, sub_points, main_type, sub_type,
             mode='lines+markers',
             name=f'Sub Reflector ({sub_type}) - Data',
             line=dict(color='red', width=3),
-            marker=dict(size=3)
+            marker=dict(size=4)
         ))
     
     # Plot fitted ellipse for sub-reflector if it's an ellipse
     if sub_type == "Ellipse" and sub_params is not None:
-        h, k, a, b = sub_params
-        ellipse_points = generate_ellipse_curve((h, k), a, b)
+        if len(sub_params) == 5:  # Full parameters with rotation
+            h, k, a, b, theta = sub_params
+        else:  # Simple parameters
+            h, k, a, b = sub_params
+            theta = 0
+            
+        ellipse_points = generate_ellipse_curve((h, k), a, b, theta)
         
         fig.add_trace(go.Scatter(
             x=ellipse_points[:, 0],
@@ -574,23 +400,6 @@ def create_reflector_plot(main_points, sub_points, main_type, sub_type,
                 marker=dict(size=10, color='orange', symbol='diamond')
             ))
     
-    # Plot ray paths
-    if ray_data is not None and len(ray_data) > 0:
-        for i, ray_path in enumerate(ray_data):
-            if len(ray_path) > 1:
-                ray_x = [p[0] for p in ray_path]
-                ray_y = [p[1] for p in ray_path]
-                
-                fig.add_trace(go.Scatter(
-                    x=ray_x,
-                    y=ray_y,
-                    mode='lines+markers',
-                    name=f'Ray {i+1}' if len(ray_data) <= 5 else None,
-                    line=dict(color='lime', width=2),
-                    marker=dict(size=4, color='lime'),
-                    showlegend=(i < 5)  # Only show legend for first 5 rays
-                ))
-    
     # Add axis of symmetry
     if len(main_points) > 0 or len(sub_points) > 0:
         all_points = np.vstack([p for p in [main_points, sub_points] if len(p) > 0])
@@ -607,11 +416,11 @@ def create_reflector_plot(main_points, sub_points, main_type, sub_type,
         ))
     
     fig.update_layout(
-        title='Dual Reflector System Analysis - With Fitted Ellipse',
+        title='Dual Reflector System Analysis - With Improved Ellipse Fit',
         xaxis_title='X (mm)',
         yaxis_title='Y (mm)',
         template='plotly_dark',
-        height=600,
+        height=700,
         showlegend=True,
         hovermode='closest'
     )
@@ -619,29 +428,6 @@ def create_reflector_plot(main_points, sub_points, main_type, sub_type,
     fig.update_xaxes(scaleanchor="y", scaleratio=1)
     
     return fig
-
-def generate_theoretical_curve(curve_type, params, x_range, num_points=100):
-    """Generate theoretical curve based on type and parameters"""
-    x = np.linspace(x_range[0], x_range[1], num_points)
-    
-    if curve_type == "Parabola":
-        # y = ax² + bx + c
-        a, b, c = params
-        y = a * x**2 + b * x + c
-    elif curve_type == "Hyperbola":
-        # Simplified hyperbola generation
-        h, k, a, b = params
-        y = k + b * np.sqrt((x - h)**2 / a**2 - 1)
-        # Handle both branches if needed
-    elif curve_type == "Ellipse":
-        # Simplified ellipse generation
-        h, k, a, b = params
-        y_pos = k + b * np.sqrt(1 - (x - h)**2 / a**2)
-        y_neg = k - b * np.sqrt(1 - (x - h)**2 / a**2)
-        return np.column_stack([np.concatenate([x, x[::-1]]), 
-                               np.concatenate([y_pos, y_neg[::-1]])])
-    
-    return np.column_stack([x, y])
 
 def main():
     # Header
@@ -799,53 +585,6 @@ def main():
         main_points = rotate_points(main_points, global_rotation)
         sub_points = rotate_points(sub_points, global_rotation)
     
-    # Mirroring option - removed
-    # show_mirror = st.sidebar.checkbox(
-    #     "Show Full Profile (Mirrored)",
-    #     value=True,
-    #     help="Show complete reflector by mirroring curve across x-axis"
-    # )
-    
-    # Ray tracing controls
-    st.sidebar.subheader("🌟 Ray Tracing")
-    show_rays = st.sidebar.checkbox("Enable Ray Tracing", value=False)
-    
-    if show_rays:
-        num_rays = st.sidebar.slider(
-            "Number of Rays:",
-            min_value=1,
-            max_value=10,
-            value=3,
-            help="Number of parallel rays to trace"
-        )
-        
-        ray_spacing = st.sidebar.slider(
-            "Ray Spacing:",
-            min_value=1.0,
-            max_value=20.0,
-            value=5.0,
-            step=1.0,
-            help="Spacing between parallel rays"
-        )
-        
-        ray_angle = st.sidebar.slider(
-            "Incident Angle (°):",
-            min_value=-90.0,
-            max_value=90.0,
-            value=-90.0,  # Default to vertical downward rays
-            step=5.0,
-            help="Angle of incoming rays (-90° = from above, 0° = horizontal)"
-        )
-        
-        ray_start_distance = st.sidebar.slider(
-            "Ray Start Distance:",
-            min_value=50.0,
-            max_value=200.0,
-            value=100.0,
-            step=10.0,
-            help="Distance to start rays from reflectors"
-        )
-    
     show_fits = st.sidebar.checkbox("Show Curve Fits", value=True)
     
     # Main content area
@@ -860,133 +599,21 @@ def main():
         
         if main_type == "Parabola":
             main_focus, main_params = fit_parabola(main_points)
-        elif main_type == "Hyperbola":
-            main_focus, main_params = fit_hyperbola(main_points)
-        elif main_type == "Ellipse":
-            main_focus, main_params = fit_ellipse(main_points)
         
         # Analyze sub reflector
         sub_foci = None
         sub_params = None
         
-        if sub_type == "Parabola":
-            sub_foci, sub_params = fit_parabola(sub_points)
-        elif sub_type == "Hyperbola":
-            sub_foci, sub_params = fit_hyperbola(sub_points)
-        elif sub_type == "Ellipse":
-            sub_foci, sub_params = fit_ellipse(sub_points)
-        
-        # Generate ray data if ray tracing is enabled
-        ray_data = None
-        if show_rays and len(main_points) > 0 and len(sub_points) > 0:
-            ray_data = []
-            
-            # Calculate ray starting positions
-            all_points = np.vstack([main_points, sub_points])
-            x_min, x_max = np.min(all_points[:, 0]), np.max(all_points[:, 0])
-            y_min, y_max = np.min(all_points[:, 1]), np.max(all_points[:, 1])
-            
-            # Ray direction from angle
-            ray_angle_rad = np.radians(ray_angle)
-            ray_direction = [np.sin(ray_angle_rad), -np.cos(ray_angle_rad)]  # Fixed direction calculation
-            
-            # Starting positions for parallel rays
-            if abs(ray_angle) > 45:  # Nearly vertical rays
-                # Start from above/below
-                center_x = (x_min + x_max) / 2
-                start_y = y_max + ray_start_distance if ray_angle < 0 else y_min - ray_start_distance
-                
-                for i in range(num_rays):
-                    offset = (i - num_rays // 2) * ray_spacing
-                    start_point = [center_x + offset, start_y]
-                    
-                    ray_path = trace_ray_path(start_point, ray_direction, main_points, sub_points)
-                    if len(ray_path) > 1:
-                        ray_data.append(ray_path)
-            else:  # Nearly horizontal rays
-                # Start from left/right
-                center_y = (y_min + y_max) / 2
-                start_x = x_min - ray_start_distance if ray_angle >= 0 else x_max + ray_start_distance
-                
-                for i in range(num_rays):
-                    offset = (i - num_rays // 2) * ray_spacing
-                    start_point = [start_x, center_y + offset]
-                    
-                    ray_path = trace_ray_path(start_point, ray_direction, main_points, sub_points)
-                    if len(ray_path) > 1:
-                        ray_data.append(ray_path)
+        if sub_type == "Ellipse":
+            sub_foci, sub_params = fit_ellipse_robust(sub_points)
         
         # Create plot
         fig = create_reflector_plot(
             main_points, sub_points, main_type, sub_type,
-            main_focus, sub_foci, show_rays, ray_data, show_mirror=False, sub_params=sub_params
+            main_focus, sub_foci, show_rays=False, ray_data=None, sub_params=sub_params
         )
         
         st.plotly_chart(fig, use_container_width=True)
-        
-        # Export options
-        st.subheader("💾 Export Results")
-        
-        col_exp1, col_exp2 = st.columns(2)
-        
-        with col_exp1:
-            if st.button("📊 Export Analysis Data"):
-                # Create comprehensive analysis report
-                analysis_data = {
-                    'Main_Reflector_Type': [main_type],
-                    'Sub_Reflector_Type': [sub_type],
-                    'Main_Points_Count': [len(main_points)],
-                    'Sub_Points_Count': [len(sub_points)]
-                }
-                
-                if main_focus is not None:
-                    if isinstance(main_focus, tuple) and len(main_focus) == 2:
-                        analysis_data['Main_Focus_X'] = [main_focus[0]]
-                        analysis_data['Main_Focus_Y'] = [main_focus[1]]
-                    elif isinstance(main_focus[0], tuple):  # Two foci
-                        analysis_data['Main_Focus1_X'] = [main_focus[0][0]]
-                        analysis_data['Main_Focus1_Y'] = [main_focus[0][1]]
-                        analysis_data['Main_Focus2_X'] = [main_focus[1][0]]
-                        analysis_data['Main_Focus2_Y'] = [main_focus[1][1]]
-                
-                if sub_foci is not None:
-                    if isinstance(sub_foci[0], tuple):  # Two foci
-                        analysis_data['Sub_Focus1_X'] = [sub_foci[0][0]]
-                        analysis_data['Sub_Focus1_Y'] = [sub_foci[0][1]]
-                        analysis_data['Sub_Focus2_X'] = [sub_foci[1][0]]
-                        analysis_data['Sub_Focus2_Y'] = [sub_foci[1][1]]
-                    else:  # Single focus
-                        analysis_data['Sub_Focus_X'] = [sub_foci[0]]
-                        analysis_data['Sub_Focus_Y'] = [sub_foci[1]]
-                
-                df = pd.DataFrame(analysis_data)
-                csv = df.to_csv(index=False)
-                
-                st.download_button(
-                    label="Download Analysis CSV",
-                    data=csv,
-                    file_name="reflector_analysis.csv",
-                    mime="text/csv"
-                )
-        
-        with col_exp2:
-            if st.button("📐 Export Point Data"):
-                # Export all point coordinates
-                main_df = pd.DataFrame(main_points, columns=['X', 'Y'])
-                main_df['Reflector'] = 'Main'
-                
-                sub_df = pd.DataFrame(sub_points, columns=['X', 'Y'])
-                sub_df['Reflector'] = 'Sub'
-                
-                combined_df = pd.concat([main_df, sub_df], ignore_index=True)
-                csv = combined_df.to_csv(index=False)
-                
-                st.download_button(
-                    label="Download Points CSV",
-                    data=csv,
-                    file_name="reflector_points.csv",
-                    mime="text/csv"
-                )
     
     with col2:
         st.header("📈 Results")
@@ -999,11 +626,7 @@ def main():
             st.write(f"**System Rotation:** {global_rotation}°")
         
         if main_focus is not None:
-            if isinstance(main_focus, tuple) and len(main_focus) == 2 and not isinstance(main_focus[0], tuple):
-                st.success(f"**Focus:** ({main_focus[0]:.3f}, {main_focus[1]:.3f})")
-            elif isinstance(main_focus[0], tuple):  # Two foci
-                st.success(f"**Focus 1:** ({main_focus[0][0]:.3f}, {main_focus[0][1]:.3f})")
-                st.success(f"**Focus 2:** ({main_focus[1][0]:.3f}, {main_focus[1][1]:.3f})")
+            st.success(f"**Focus:** ({main_focus[0]:.3f}, {main_focus[1]:.3f})")
         else:
             st.warning("Could not determine focus")
         
@@ -1033,40 +656,30 @@ def main():
         else:
             st.warning("Could not determine foci")
         
-        if sub_params is not None:
+        if sub_params is not None and sub_type == "Ellipse":
             st.write("**Ellipse Parameters:**")
-            h, k, a, b = sub_params
-            st.write(f"Center: ({h:.3f}, {k:.3f})")
-            st.write(f"Semi-major axis (a): {a:.3f}")
-            st.write(f"Semi-minor axis (b): {b:.3f}")
-            eccentricity = np.sqrt(1 - (b**2)/(a**2)) if a > 0 else 0
-            st.write(f"Eccentricity: {eccentricity:.3f}")
-        
-        # Ray tracing results
-        if show_rays and ray_data:
-            st.subheader("Ray Tracing")
-            st.write(f"**Rays Traced:** {len(ray_data)}")
-            st.write(f"**Incident Angle:** {ray_angle}°")
-            
-            # Analyze ray convergence
-            final_points = []
-            for ray_path in ray_data:
-                if len(ray_path) >= 4:  # Start, main hit, sub hit, final
-                    final_points.append(ray_path[-1])
-            
-            if len(final_points) > 1:
-                final_points = np.array(final_points)
-                convergence_x = np.std(final_points[:, 0])
-                convergence_y = np.std(final_points[:, 1])
-                st.info(f"**Convergence (σx):** {convergence_x:.3f}")
-                st.info(f"**Convergence (σy):** {convergence_y:.3f}")
+            if len(sub_params) == 5:
+                h, k, a, b, theta = sub_params
+                st.write(f"Center: ({h:.3f}, {k:.3f})")
+                st.write(f"Semi-major axis (a): {a:.3f}")
+                st.write(f"Semi-minor axis (b): {b:.3f}")
+                st.write(f"Rotation: {np.degrees(theta):.1f}°")
+                eccentricity = np.sqrt(1 - (b**2)/(a**2)) if a > 0 else 0
+                st.write(f"Eccentricity: {eccentricity:.3f}")
+            else:
+                h, k, a, b = sub_params
+                st.write(f"Center: ({h:.3f}, {k:.3f})")
+                st.write(f"Semi-major axis (a): {a:.3f}")
+                st.write(f"Semi-minor axis (b): {b:.3f}")
+                eccentricity = np.sqrt(1 - (b**2)/(a**2)) if a > 0 else 0
+                st.write(f"Eccentricity: {eccentricity:.3f}")
         
         # System analysis
         st.subheader("System Analysis")
         
         if main_focus is not None and sub_foci is not None:
             # Analyze focal relationships
-            if isinstance(main_focus, tuple) and len(main_focus) == 2 and not isinstance(main_focus[0], tuple):
+            if isinstance(main_focus, tuple) and len(main_focus) == 2:
                 main_f = main_focus
             else:
                 main_f = None
@@ -1077,143 +690,6 @@ def main():
                     if main_f is not None:
                         dist = np.sqrt((main_f[0] - sub_f[0])**2 + (main_f[1] - sub_f[1])**2)
                         if dist < 5.0:  # Increased tolerance for real-world data
-                            st.success(f"✅ Main focus aligns with sub focus {i+1}")
-                            st.write(f"Distance: {dist:.3f}")
-                        else:
-                            st.info(f"Distance to sub focus {i+1}: {dist:.3f}")
-            
-            # Determine system type
-            if sub_type == "Hyperbola":
-                st.write("**System Type:** Cassegrain")
-            elif sub_type == "Ellipse":
-                st.write("**System Type:** Gregorian")
-        
-        # Data quality metrics
-        st.subheader("Data Quality")
-        
-        if len(main_points) > 0:
-            main_range_x = np.ptp(main_points[:, 0])
-            main_range_y = np.ptp(main_points[:, 1])
-            st.write(f"Main X range: {main_range_x:.2f}")
-            st.write(f"Main Y range: {main_range_y:.2f}")
-        
-        if len(sub_points) > 0:
-            sub_range_x = np.ptp(sub_points[:, 0])
-            sub_range_y = np.ptp(sub_points[:, 1])
-            st.write(f"Sub X range: {sub_range_x:.2f}")
-            st.write(f"Sub Y range: {sub_range_y:.2f}")("Sub Reflector")
-        st.write(f"**Type:** {sub_type}")
-        st.write(f"**Points:** {len(sub_points)}")
-        if sub_rotation != 0:
-            st.write(f"**Rotation:** {sub_rotation}°")
-        
-        if sub_foci is not None:
-            if isinstance(sub_foci[0], tuple):  # Two foci
-                st.success(f"**Focus 1:** ({sub_foci[0][0]:.3f}, {sub_foci[0][1]:.3f})")
-                st.success(f"**Focus 2:** ({sub_foci[1][0]:.3f}, {sub_foci[1][1]:.3f})")
-                
-                # Calculate distance between foci
-                dist = np.sqrt((sub_foci[1][0] - sub_foci[0][0])**2 + 
-                              (sub_foci[1][1] - sub_foci[0][1])**2)
-                st.info(f"**Focal Distance:** {dist:.3f}")
-            else:  # Single focus
-                st.success(f"**Focus:** ({sub_foci[0]:.3f}, {sub_foci[1]:.3f})")
-        else:
-            st.warning("Could not determine foci")
-        
-        # Ray tracing results
-        if show_rays and ray_data:
-            st.subheader("Ray Tracing")
-            st.write(f"**Rays Traced:** {len(ray_data)}")
-            st.write(f"**Incident Angle:** {ray_angle}°")
-            
-            # Analyze ray convergence
-            final_points = []
-            for ray_path in ray_data:
-                if len(ray_path) >= 4:  # Start, main hit, sub hit, final
-                    final_points.append(ray_path[-1])
-            
-            if len(final_points) > 1:
-                final_points = np.array(final_points)
-                convergence_x = np.std(final_points[:, 0])
-                convergence_y = np.std(final_points[:, 1])
-                st.info(f"**Convergence (σx):** {convergence_x:.3f}")
-                st.info(f"**Convergence (σy):** {convergence_y:.3f}")
-        
-        # System analysis
-        st.subheader("System Analysis")
-        
-        if main_focus is not None and sub_foci is not None:
-            # Analyze focal relationships
-            if isinstance(main_focus, tuple) and len(main_focus) == 2 and not isinstance(main_focus[0], tuple):
-                main_f = main_focus
-            else:
-                main_f = None
-            
-            if isinstance(sub_foci[0], tuple):
-                # Check if main focus coincides with either sub focus
-                for i, sub_f in enumerate(sub_foci):
-                    if main_f is not None:
-                        dist = np.sqrt((main_f[0] - sub_f[0])**2 + (main_f[1] - sub_f[1])**2)
-                        if dist < 1.0:  # Tolerance
-                            st.success(f"✅ Main focus aligns with sub focus {i+1}")
-                            st.write(f"Distance: {dist:.3f}")
-                        else:
-                            st.info(f"Distance to sub focus {i+1}: {dist:.3f}")
-            
-            # Determine system type
-            if sub_type == "Hyperbola":
-                st.write("**System Type:** Cassegrain")
-            elif sub_type == "Ellipse":
-                st.write("**System Type:** Gregorian")
-        
-        # Data quality metrics
-        st.subheader("Data Quality")
-        
-        if len(main_points) > 0:
-            main_range_x = np.ptp(main_points[:, 0])
-            main_range_y = np.ptp(main_points[:, 1])
-            st.write(f"Main X range: {main_range_x:.2f}")
-            st.write(f"Main Y range: {main_range_y:.2f}")
-        
-        if len(sub_points) > 0:
-            sub_range_x = np.ptp(sub_points[:, 0])
-            sub_range_y = np.ptp(sub_points[:, 1])
-            st.write(f"Sub X range: {sub_range_x:.2f}")
-            st.write(f"Sub Y range: {sub_range_y:.2f}")("Sub Reflector")
-        st.write(f"**Type:** {sub_type}")
-        st.write(f"**Points:** {len(sub_points)}")
-        
-        if sub_foci is not None:
-            if isinstance(sub_foci[0], tuple):  # Two foci
-                st.success(f"**Focus 1:** ({sub_foci[0][0]:.3f}, {sub_foci[0][1]:.3f})")
-                st.success(f"**Focus 2:** ({sub_foci[1][0]:.3f}, {sub_foci[1][1]:.3f})")
-                
-                # Calculate distance between foci
-                dist = np.sqrt((sub_foci[1][0] - sub_foci[0][0])**2 + 
-                              (sub_foci[1][1] - sub_foci[0][1])**2)
-                st.info(f"**Focal Distance:** {dist:.3f}")
-            else:  # Single focus
-                st.success(f"**Focus:** ({sub_foci[0]:.3f}, {sub_foci[1]:.3f})")
-        else:
-            st.warning("Could not determine foci")
-        
-        # System analysis
-        st.subheader("System Analysis")
-        
-        if main_focus is not None and sub_foci is not None:
-            # Analyze focal relationships
-            if isinstance(main_focus, tuple) and len(main_focus) == 2 and not isinstance(main_focus[0], tuple):
-                main_f = main_focus
-            else:
-                main_f = None
-            
-            if isinstance(sub_foci[0], tuple):
-                # Check if main focus coincides with either sub focus
-                for i, sub_f in enumerate(sub_foci):
-                    if main_f is not None:
-                        dist = np.sqrt((main_f[0] - sub_f[0])**2 + (main_f[1] - sub_f[1])**2)
-                        if dist < 1.0:  # Tolerance
                             st.success(f"✅ Main focus aligns with sub focus {i+1}")
                             st.write(f"Distance: {dist:.3f}")
                         else:
