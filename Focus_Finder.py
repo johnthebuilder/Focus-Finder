@@ -371,42 +371,155 @@ def fit_polynomial_curve(points, degree=3):
     except Exception as e:
         return None, None
 
-def fit_ellipse_partial(points):
-    """Fit ellipse to partial curve data with better constraints"""
+def fit_ellipse_through_points(points):
+    """Fit ellipse that passes through the given points (partial curve on full ellipse)"""
     if len(points) < 5:
         return None, None
     
     try:
+        # Use 5 well-distributed points for better fitting
+        n_points = len(points)
+        if n_points > 5:
+            # Select 5 evenly distributed points
+            indices = np.linspace(0, n_points-1, 5, dtype=int)
+            selected_points = points[indices]
+        else:
+            selected_points = points
+        
+        x = selected_points[:, 0]
+        y = selected_points[:, 1]
+        
+        # Algebraic ellipse fitting: Ax² + Bxy + Cy² + Dx + Ey + F = 0
+        # We want the ellipse that these points lie on
+        
+        # Build the constraint matrix - each point gives us one equation
+        # For n points, we have n equations in 6 unknowns (A,B,C,D,E,F)
+        # We set F = -1 to avoid trivial solution and solve for the rest
+        
+        D_matrix = np.column_stack([
+            x**2,           # A
+            x * y,          # B  
+            y**2,           # C
+            x,              # D
+            y,              # E
+        ])
+        
+        # Right hand side (since F = -1)
+        b = -np.ones(len(x))
+        
+        # Solve the overdetermined system using least squares
+        coeffs, residuals, rank, s = np.linalg.lstsq(D_matrix, b, rcond=None)
+        A, B, C, D, E = coeffs
+        F = -1
+        
+        # Check if this represents an ellipse (discriminant < 0)
+        discriminant = B**2 - 4*A*C
+        if discriminant >= 0:
+            st.warning("Fitted curve is not an ellipse (discriminant >= 0)")
+            # Try alternative method
+            return fit_ellipse_geometric(points)
+        
+        # Convert to center and axis form
+        # Calculate center
+        denom = B**2 - 4*A*C
+        if abs(denom) < 1e-12:
+            return fit_ellipse_geometric(points)
+        
+        h = (2*C*D - B*E) / denom  # center x
+        k = (2*A*E - B*D) / denom  # center y
+        
+        # Calculate the semi-axes and rotation angle
+        # This involves solving the eigenvalue problem for the quadratic form
+        theta = 0.5 * np.arctan2(B, A - C) if abs(A - C) > 1e-10 else 0
+        
+        # Calculate the semi-axis lengths using the eigenvalues
+        cos_theta = np.cos(theta)
+        sin_theta = np.sin(theta)
+        
+        # Rotate to principal axes
+        A_rot = A * cos_theta**2 + B * cos_theta * sin_theta + C * sin_theta**2
+        C_rot = A * sin_theta**2 - B * cos_theta * sin_theta + C * cos_theta**2
+        
+        # Calculate semi-axes lengths
+        # The general form becomes: A_rot*(x')² + C_rot*(y')² = constant
+        constant = A*h**2 + B*h*k + C*k**2 + D*h + E*k + F
+        
+        if A_rot <= 0 or C_rot <= 0 or constant >= 0:
+            return fit_ellipse_geometric(points)
+        
+        a = np.sqrt(-constant / A_rot)  # semi-axis along rotated x
+        b = np.sqrt(-constant / C_rot)  # semi-axis along rotated y
+        
+        # Ensure a >= b (a is semi-major axis)
+        if b > a:
+            a, b = b, a
+            theta += np.pi/2
+        
+        # Calculate foci
+        if a > b:
+            c_focal = np.sqrt(a**2 - b**2)
+            # Foci are along the major axis
+            focus1_x = h + c_focal * np.cos(theta)
+            focus1_y = k + c_focal * np.sin(theta)
+            focus2_x = h - c_focal * np.cos(theta)
+            focus2_y = k - c_focal * np.sin(theta)
+        else:
+            focus1_x = focus2_x = h
+            focus1_y = focus2_y = k
+        
+        focus1 = (focus1_x, focus1_y)
+        focus2 = (focus2_x, focus2_y)
+        
+        # Return results
+        return (focus1, focus2), (h, k, a, b, theta)
+        
+    except Exception as e:
+        st.error(f"Ellipse fitting error: {str(e)}")
+        return fit_ellipse_geometric(points)
+
+def fit_ellipse_geometric(points):
+    """Geometric ellipse fitting - fallback method"""
+    try:
         x = points[:, 0]
         y = points[:, 1]
         
-        # For partial curves, use a simpler geometric approach
-        # Find approximate center from data bounds
-        x_center = (np.min(x) + np.max(x)) / 2
-        y_center = (np.min(y) + np.max(y)) / 2
+        # Simple geometric approach
+        # Assume the points represent a section of an ellipse
         
-        # Estimate semi-axes from data spread
-        # For partial ellipse, this is approximate
-        x_span = np.max(x) - np.min(x)
-        y_span = np.max(y) - np.min(y)
+        # Find the extreme points
+        x_min, x_max = np.min(x), np.max(x)
+        y_min, y_max = np.min(y), np.max(y)
         
-        # Assume the partial curve represents a significant portion
-        a = x_span * 1.5  # Semi-major axis estimate
-        b = y_span * 2.0  # Semi-minor axis estimate
+        # Estimate center from the midpoint of extremes
+        h = (x_min + x_max) / 2
+        k = (y_min + y_max) / 2
+        
+        # Estimate semi-axes
+        # For a partial ellipse, we need to extrapolate
+        x_span = x_max - x_min
+        y_span = y_max - y_min
+        
+        # Calculate distances from center to data points
+        distances = np.sqrt((x - h)**2 + (y - k)**2)
+        max_dist = np.max(distances)
+        
+        # Estimate axes based on data spread and maximum distance
+        a = max(x_span / 1.5, max_dist * 1.2)  # Semi-major axis
+        b = max(y_span / 1.5, max_dist * 0.8)   # Semi-minor axis
         
         # Ensure a >= b
         if b > a:
             a, b = b, a
         
         # Calculate foci
-        if a > b and a > 0 and b > 0:
+        if a > b and a > 0:
             c = np.sqrt(a**2 - b**2)
-            focus1 = (x_center + c, y_center)
-            focus2 = (x_center - c, y_center)
+            focus1 = (h + c, k)
+            focus2 = (h - c, k)
         else:
-            focus1 = focus2 = (x_center, y_center)
+            focus1 = focus2 = (h, k)
         
-        return (focus1, focus2), (x_center, y_center, a, b, 0)
+        return (focus1, focus2), (h, k, a, b, 0)
         
     except:
         return None, None
@@ -547,7 +660,7 @@ def main():
                 unsafe_allow_html=True)
     
     st.markdown("""
-    <div class="info-box">
+    <div class="info-box" style="background-color: #2d3142; color: #ffffff; border: 1px solid #4a4e69;">
     <strong>Purpose:</strong> Analyze dual reflector antenna systems (Cassegrain/Gregorian) to find focus points.
     Upload DXF files with 2D projected curves or input points manually.
     </div>
@@ -697,6 +810,13 @@ def main():
         main_points = rotate_points(main_points, global_rotation)
         sub_points = rotate_points(sub_points, global_rotation)
     
+    # Curve fitting options
+    st.sidebar.subheader("🔧 Curve Fitting")
+    if st.sidebar.button("🔄 Refresh Fit"):
+        st.rerun()
+    
+    fit_info = st.sidebar.info("For ellipse: Uses 5 distributed points to find the full ellipse that your partial curve lies on.")
+    
     show_fits = st.sidebar.checkbox("Show Curve Fits", value=True)
     
     # Main content area
@@ -715,14 +835,18 @@ def main():
         # Analyze sub reflector
         sub_foci = None
         sub_params = None
+        fitted_curve = None
         
         if sub_type == "Ellipse":
-            sub_foci, sub_params = fit_ellipse_robust(sub_points)
+            sub_foci, sub_params = fit_ellipse_through_points(sub_points)
+        elif sub_type == "Polynomial":
+            sub_foci, fitted_curve = fit_polynomial_curve(sub_points, degree=3)
         
         # Create plot
         fig = create_reflector_plot(
             main_points, sub_points, main_type, sub_type,
-            main_focus, sub_foci, show_rays=False, ray_data=None, sub_params=sub_params
+            main_focus, sub_foci, show_rays=False, ray_data=None, 
+            sub_params=sub_params, fitted_curve=fitted_curve
         )
         
         st.plotly_chart(fig, use_container_width=True)
@@ -785,6 +909,20 @@ def main():
                 st.write(f"Semi-minor axis (b): {b:.3f}")
                 eccentricity = np.sqrt(1 - (b**2)/(a**2)) if a > 0 else 0
                 st.write(f"Eccentricity: {eccentricity:.3f}")
+        
+        elif fitted_curve is not None and sub_type == "Polynomial":
+            st.write("**Polynomial Parameters:**")
+            coeffs, x_extended, y_extended = fitted_curve
+            st.write(f"Degree: {len(coeffs)-1}")
+            for i, coeff in enumerate(coeffs):
+                power = len(coeffs) - 1 - i
+                if power == 0:
+                    st.write(f"Constant: {coeff:.6f}")
+                elif power == 1:
+                    st.write(f"Linear: {coeff:.6f}")
+                else:
+                    st.write(f"x^{power}: {coeff:.6f}")
+            st.info("⚠️ Polynomial fit - focus is approximate")
         
         # System analysis
         st.subheader("System Analysis")
