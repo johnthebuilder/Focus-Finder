@@ -121,8 +121,8 @@ def rotate_points(points, angle_deg):
     
     return np.dot(points, rotation_matrix.T)
 
-def fit_parabola_advanced(points):
-    """Advanced parabola fitting for polynomial-optimized curves"""
+def fit_parabola_dish(points):
+    """Fit parabola focus for dish reflector - correct approach"""
     if len(points) < 3:
         return None, None
     
@@ -130,50 +130,56 @@ def fit_parabola_advanced(points):
         x = points[:, 0]
         y = points[:, 1]
         
-        # For your main reflector, it's a dish opening upward (concave up)
-        # The polynomial is: y = Am/100000×x³ + Bm/1000×x² + Cm×x/100 + Dm/10 - 30
-        # For a dish, we expect the focus to be above the vertex
-        
-        # Find the vertex (lowest point for upward-opening dish)
+        # Your main dish opens upward (concave up) 
+        # Find the vertex (minimum y value - bottom of dish)
         vertex_idx = np.argmin(y)
         vertex_x = x[vertex_idx]
         vertex_y = y[vertex_idx]
         
-        # For polynomial curves, estimate the effective focal length
-        # by fitting a parabola to points near the vertex
+        # For a parabolic dish, the focus is ABOVE the vertex
+        # Use points near the vertex to estimate focal length
         
-        # Use points within 20% of the total span around the vertex
+        # Take points within 30% of span around vertex
         x_span = np.max(x) - np.min(x)
-        mask = np.abs(x - vertex_x) <= x_span * 0.2
+        center_mask = np.abs(x - vertex_x) <= x_span * 0.3
         
-        if np.sum(mask) >= 3:
-            x_local = x[mask]
-            y_local = y[mask]
+        if np.sum(center_mask) >= 3:
+            x_center = x[center_mask]
+            y_center = y[center_mask]
             
             # Translate to vertex coordinates
-            x_rel = x_local - vertex_x
-            y_rel = y_local - vertex_y
+            x_rel = x_center - vertex_x
+            y_rel = y_center - vertex_y
             
-            # Fit parabola y = ax² near vertex
+            # Fit y = ax² near vertex (dish opens upward)
             try:
-                # Use only the x² term for better focus estimation
-                A = x_rel[:, np.newaxis]**2
-                a_coeff = np.linalg.lstsq(A, y_rel, rcond=None)[0][0]
-                
-                if a_coeff > 0:  # Upward opening parabola
-                    # For y = ax², focus is at (0, 1/(4a)) relative to vertex
-                    focal_distance = 1 / (4 * a_coeff)
-                    focus_x = vertex_x
-                    focus_y = vertex_y + focal_distance
+                # Remove zero displacement points
+                nonzero_mask = np.abs(x_rel) > 1e-6
+                if np.sum(nonzero_mask) >= 2:
+                    x_fit = x_rel[nonzero_mask]
+                    y_fit = y_rel[nonzero_mask]
                     
-                    return (focus_x, focus_y), (a_coeff, vertex_x, vertex_y)
+                    # Fit y = ax²
+                    a_coeff = np.sum(y_fit * x_fit**2) / np.sum(x_fit**4)
+                    
+                    if a_coeff > 0:  # Upward opening
+                        # Focus is at distance f = 1/(4a) ABOVE vertex
+                        focal_distance = 1 / (4 * a_coeff)
+                        focus_x = vertex_x
+                        focus_y = vertex_y + focal_distance
+                        
+                        return (focus_x, focus_y), (a_coeff, vertex_x, vertex_y, focal_distance)
             except:
                 pass
         
-        # Fallback: estimate focus from curvature
-        # For a dish, focus should be above the vertex
-        y_range = np.max(y) - np.min(y)
-        estimated_focal_length = x_span / 4  # Rough estimate
+        # Fallback: use standard dish focal length estimation
+        # For your dish dimensions, estimate reasonable focal length
+        dish_diameter = np.max(x) - np.min(x)
+        dish_depth = np.max(y) - np.min(y)
+        
+        # F/D ratio typically 0.3-0.5 for dishes
+        estimated_focal_length = dish_diameter * 0.4  # Conservative estimate
+        
         focus_x = vertex_x
         focus_y = vertex_y + estimated_focal_length
         
@@ -1195,7 +1201,7 @@ def main():
         main_params = None
         
         if main_type == "Parabola":
-            main_focus, main_params = fit_parabola_advanced(main_points)
+            main_focus, main_params = fit_parabola_dish(main_points)
         
         # Analyze sub reflector
         sub_foci = None
@@ -1224,30 +1230,16 @@ def main():
             ray_direction = [np.sin(ray_angle_rad), -np.cos(ray_angle_rad)]
             
             # Starting positions for parallel rays
-            if abs(ray_angle) > 45:  # Nearly vertical rays
-                # Start from above
-                center_x = (x_min + x_max) / 2
-                start_y = y_max + ray_start_distance
+            center_x = (x_min + x_max) / 2
+            start_y = y_max + ray_start_distance  # Start above the system
+            
+            for i in range(num_rays):
+                offset = (i - num_rays // 2) * ray_spacing
+                start_point = [center_x + offset, start_y]
                 
-                for i in range(num_rays):
-                    offset = (i - num_rays // 2) * ray_spacing
-                    start_point = [center_x + offset, start_y]
-                    
-                    ray_path = trace_ray_path_improved(start_point, ray_direction, main_points, sub_points)
-                    if len(ray_path) > 1:
-                        ray_data.append(ray_path)
-            else:  # Nearly horizontal rays
-                # Start from left/right
-                center_y = (y_min + y_max) / 2
-                start_x = x_min - ray_start_distance if ray_angle >= 0 else x_max + ray_start_distance
-                
-                for i in range(num_rays):
-                    offset = (i - num_rays // 2) * ray_spacing
-                    start_point = [start_x, center_y + offset]
-                    
-                    ray_path = trace_ray_path_improved(start_point, ray_direction, main_points, sub_points)
-                    if len(ray_path) > 1:
-                        ray_data.append(ray_path)
+                ray_path = trace_ray_path_improved(start_point, ray_direction, main_points, sub_points)
+                if len(ray_path) > 1:
+                    ray_data.append(ray_path)
         
         # Create plot
         fig = create_reflector_plot(
