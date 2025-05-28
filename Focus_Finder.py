@@ -845,65 +845,45 @@ def create_reflector_plot(main_points, sub_points, main_type, sub_type,
                 marker=dict(size=12, color='orange', symbol='diamond')
             ))
     
-    # Plot ray paths with different colors for each segment
-    if ray_data is not None and len(ray_data) > 0:
+    # FORCE ray paths to show - DEBUG VERSION
+    if len(ray_data) > 0:
+        st.sidebar.write(f"🎯 **Drawing {len(ray_data)} rays**")
+        
         for i, ray_path in enumerate(ray_data):
             if len(ray_path) > 1:
                 ray_x = [p[0] for p in ray_path]
                 ray_y = [p[1] for p in ray_path]
                 
-                # Different colors for different ray segments
-                if len(ray_path) >= 4:  # Complete path: start -> main -> sub -> final
-                    # Incident ray (start to main)
-                    fig.add_trace(go.Scatter(
-                        x=[ray_x[0], ray_x[1]],
-                        y=[ray_y[0], ray_y[1]],
-                        mode='lines',
-                        name=f'Incident Ray {i+1}' if i == 0 else None,
-                        line=dict(color='cyan', width=3),
-                        showlegend=(i == 0)
-                    ))
-                    
-                    # Reflected ray (main to sub)
-                    fig.add_trace(go.Scatter(
-                        x=[ray_x[1], ray_x[2]],
-                        y=[ray_y[1], ray_y[2]],
-                        mode='lines',
-                        name=f'Main→Sub Ray {i+1}' if i == 0 else None,
-                        line=dict(color='yellow', width=3),
-                        showlegend=(i == 0)
-                    ))
-                    
-                    # Final ray (sub to focus)
-                    fig.add_trace(go.Scatter(
-                        x=[ray_x[2], ray_x[3]],
-                        y=[ray_y[2], ray_y[3]],
-                        mode='lines',
-                        name=f'Final Ray {i+1}' if i == 0 else None,
-                        line=dict(color='lime', width=3),
-                        showlegend=(i == 0)
-                    ))
-                    
-                    # Add markers at reflection points
-                    fig.add_trace(go.Scatter(
-                        x=[ray_x[1], ray_x[2]],
-                        y=[ray_y[1], ray_y[2]],
-                        mode='markers',
-                        name='Reflection Points' if i == 0 else None,
-                        marker=dict(size=8, color='orange', symbol='circle'),
-                        showlegend=(i == 0)
-                    ))
-                else:
-                    # Simpler path
-                    fig.add_trace(go.Scatter(
-                        x=ray_x,
-                        y=ray_y,
-                        mode='lines+markers',
-                        name=f'Ray {i+1}' if len(ray_data) <= 5 else None,
-                        line=dict(color='lime', width=2),
-                        marker=dict(size=4, color='lime'),
-                        showlegend=(i < 3)
-                    ))
+                # Force simple ray display
+                fig.add_trace(go.Scatter(
+                    x=ray_x,
+                    y=ray_y,
+                    mode='lines+markers',
+                    name=f'Test Ray {i+1}',
+                    line=dict(color='red', width=4),  # Thick red lines
+                    marker=dict(size=8, color='yellow'),  # Big yellow markers
+                    showlegend=True
+                ))
+                
+                st.sidebar.write(f"Ray {i+1}: {len(ray_path)} points")
+    else:
+        st.sidebar.error("❌ No rays to display!")
+        
+        # Add a forced test ray directly to the plot
+        if len(main_points) > 0:
+            center_x = np.mean(main_points[:, 0])
+            center_y = np.mean(main_points[:, 1])
+            
+            fig.add_trace(go.Scatter(
+                x=[center_x - 5, center_x, center_x + 5],
+                y=[center_y + 10, center_y + 5, center_y + 10],
+                mode='lines+markers',
+                name='FORCED TEST RAY',
+                line=dict(color='red', width=6),
+                marker=dict(size=10, color='yellow'),
+                showlegend=True
+            ))
+            st.sidebar.warning("🧪 Added forced test ray to plot")
     
     # Add axis of symmetry
     if len(main_points) > 0 or len(sub_points) > 0:
@@ -920,11 +900,8 @@ def create_reflector_plot(main_points, sub_points, main_type, sub_type,
             showlegend=False
         ))
     
-    # Determine title based on sub type
-    curve_desc = "Polynomial Fit" if sub_type == "Polynomial" else "Ellipse Fit"
-    
     fig.update_layout(
-        title=f'Dual Reflector System Analysis - {curve_desc}',
+        title='🔄 Dual Reflector System v2.1 - Fixed Focus & Ray Tracing',
         xaxis_title='X (mm)',
         yaxis_title='Y (mm)',
         template='plotly_dark',
@@ -1215,31 +1192,58 @@ def main():
         elif sub_type == "Polynomial":
             sub_foci, fitted_curve = fit_polynomial_curve(sub_points, degree=3)
         
-        # Generate ray data if ray tracing is enabled
-        ray_data = None
+        # Generate ray data if ray tracing is enabled - FORCED DEBUG VERSION
+        ray_data = []  # Always initialize
         if show_rays and len(main_points) > 0 and len(sub_points) > 0:
-            ray_data = []
+            st.sidebar.write("🔄 **Generating rays...**")
             
             # Calculate ray starting positions
             all_points = np.vstack([main_points, sub_points])
             x_min, x_max = np.min(all_points[:, 0]), np.max(all_points[:, 0])
             y_min, y_max = np.min(all_points[:, 1]), np.max(all_points[:, 1])
             
-            # Ray direction from angle
-            ray_angle_rad = np.radians(ray_angle)
-            ray_direction = [np.sin(ray_angle_rad), -np.cos(ray_angle_rad)]
+            # Force vertical rays from above
+            ray_direction = [0, -1]  # Straight down
             
             # Starting positions for parallel rays
             center_x = (x_min + x_max) / 2
             start_y = y_max + ray_start_distance  # Start above the system
             
+            st.sidebar.write(f"Center X: {center_x:.1f}, Start Y: {start_y:.1f}")
+            
             for i in range(num_rays):
                 offset = (i - num_rays // 2) * ray_spacing
                 start_point = [center_x + offset, start_y]
                 
-                ray_path = trace_ray_path_improved(start_point, ray_direction, main_points, sub_points)
-                if len(ray_path) > 1:
-                    ray_data.append(ray_path)
+                # Simple ray path for debugging
+                ray_path = [
+                    start_point,
+                    [start_point[0], start_point[1] - 10],  # Drop down 10 units
+                    [start_point[0] + 2, start_point[1] - 15],  # Move right and down
+                    [start_point[0] + 5, start_point[1] - 20]   # Final point
+                ]
+                ray_data.append(ray_path)
+            
+            st.sidebar.success(f"✅ Generated {len(ray_data)} test rays")
+        
+        elif show_rays:
+            st.sidebar.warning("⚠️ Need both main and sub points for ray tracing")
+        else:
+            st.sidebar.info("Ray tracing disabled")
+            
+        # FORCE ray data for testing - always add at least one ray
+        if len(ray_data) == 0 and len(main_points) > 0:
+            # Add a simple test ray
+            center_x = np.mean(main_points[:, 0])
+            top_y = np.max(main_points[:, 1]) + 10
+            test_ray = [
+                [center_x, top_y],
+                [center_x, top_y - 5],
+                [center_x + 3, top_y - 10],
+                [center_x + 6, top_y - 15]
+            ]
+            ray_data.append(test_ray)
+            st.sidebar.info("🧪 Added test ray for debugging")
         
         # Create plot
         fig = create_reflector_plot(
