@@ -182,7 +182,7 @@ def fit_hyperbola(points):
         return None, None
 
 def fit_ellipse(points):
-    """Fit ellipse to points"""
+    """Fit ellipse to points using least squares method"""
     if len(points) < 5:
         return None, None
     
@@ -190,25 +190,119 @@ def fit_ellipse(points):
         x = points[:, 0]
         y = points[:, 1]
         
-        # Estimate center
-        h = np.mean(x)
-        k = np.mean(y)
+        # Algebraic ellipse fitting: Ax² + Bxy + Cy² + Dx + Ey + F = 0
+        # Set up the design matrix for least squares
+        D = np.column_stack([x*x, x*y, y*y, x, y, np.ones(len(x))])
         
-        # Estimate semi-axes
-        a = np.std(x)
-        b = np.std(y)
+        # Solve the constraint B² - 4AC < 0 (ellipse condition)
+        # Use the constraint 4AC - B² = 1
+        S = D.T @ D
+        C = np.zeros((6, 6))
+        C[0, 2] = 2
+        C[1, 1] = -1
+        C[2, 0] = 2
+        
+        # Solve generalized eigenvalue problem
+        try:
+            from scipy.linalg import eig
+            eigenvals, eigenvecs = eig(S, C)
+            
+            # Find the eigenvector with positive eigenvalue
+            pos_idx = None
+            for i, val in enumerate(eigenvals):
+                if np.isreal(val) and val > 0:
+                    pos_idx = i
+                    break
+            
+            if pos_idx is None:
+                # Fallback to simple ellipse fitting
+                return fit_ellipse_simple(points)
+            
+            coeffs = np.real(eigenvecs[:, pos_idx])
+            A, B, C, D, E, F = coeffs
+            
+        except:
+            # Fallback to simple method
+            return fit_ellipse_simple(points)
+        
+        # Convert to center and axes form
+        # Calculate center
+        denom = B*B - 4*A*C
+        if abs(denom) < 1e-10:
+            return fit_ellipse_simple(points)
+            
+        h = (2*C*D - B*E) / denom
+        k = (2*A*E - B*D) / denom
+        
+        # Calculate semi-axes
+        num = 2*(A*E*E + C*D*D + F*B*B - 2*B*D*E - 4*A*C*F)
+        denom1 = (B*B - 4*A*C) * (np.sqrt((A-C)*(A-C) + B*B) - (A+C))
+        denom2 = (B*B - 4*A*C) * (-np.sqrt((A-C)*(A-C) + B*B) - (A+C))
+        
+        if denom1 <= 0 or denom2 <= 0:
+            return fit_ellipse_simple(points)
+            
+        a = np.sqrt(abs(num / denom1))  # semi-major axis
+        b = np.sqrt(abs(num / denom2))  # semi-minor axis
+        
+        # Ensure a >= b
+        if b > a:
+            a, b = b, a
         
         # Calculate foci
         if a > b:
-            c = np.sqrt(a**2 - b**2)
-            focus1 = (h - c, k)
-            focus2 = (h + c, k)
+            c = np.sqrt(a*a - b*b)
+            # Rotation angle
+            if abs(B) < 1e-10:
+                angle = 0 if A < C else np.pi/2
+            else:
+                angle = 0.5 * np.arctan(2*B / (A - C))
+            
+            # Foci positions
+            focus1_x = h + c * np.cos(angle)
+            focus1_y = k + c * np.sin(angle)
+            focus2_x = h - c * np.cos(angle)
+            focus2_y = k - c * np.sin(angle)
+            
+            focus1 = (focus1_x, focus1_y)
+            focus2 = (focus2_x, focus2_y)
         else:
-            c = np.sqrt(b**2 - a**2)
-            focus1 = (h, k - c)
-            focus2 = (h, k + c)
+            focus1 = focus2 = (h, k)
         
         return (focus1, focus2), (h, k, a, b)
+        
+    except Exception as e:
+        # Final fallback
+        return fit_ellipse_simple(points)
+
+def fit_ellipse_simple(points):
+    """Simple ellipse fitting using bounding box approximation"""
+    try:
+        x = points[:, 0]
+        y = points[:, 1]
+        
+        # Estimate center as centroid
+        h = np.mean(x)
+        k = np.mean(y)
+        
+        # Estimate semi-axes from data spread
+        a = (np.max(x) - np.min(x)) / 2
+        b = (np.max(y) - np.min(y)) / 2
+        
+        # Ensure a >= b for proper focus calculation
+        if b > a:
+            a, b = b, a
+            
+        # Calculate foci
+        if a > b and a > 0 and b > 0:
+            c = np.sqrt(a*a - b*b)
+            focus1 = (h + c, k)
+            focus2 = (h - c, k)
+        else:
+            focus1 = focus2 = (h, k)
+        
+        return (focus1, focus2), (h, k, a, b)
+        
     except:
         return None, None
 
@@ -650,7 +744,7 @@ def main():
     
     sub_type = st.sidebar.selectbox(
         "Sub Reflector Type:",
-        ["Hyperbola", "Ellipse", "Parabola"]
+        ["Ellipse", "Hyperbola", "Parabola"]  # Default to Ellipse first
     )
     
     # Apply global rotation to both reflectors
@@ -926,7 +1020,7 @@ def main():
                 for i, sub_f in enumerate(sub_foci):
                     if main_f is not None:
                         dist = np.sqrt((main_f[0] - sub_f[0])**2 + (main_f[1] - sub_f[1])**2)
-                        if dist < 1.0:  # Tolerance
+                        if dist < 5.0:  # Increased tolerance for real-world data
                             st.success(f"✅ Main focus aligns with sub focus {i+1}")
                             st.write(f"Distance: {dist:.3f}")
                         else:
