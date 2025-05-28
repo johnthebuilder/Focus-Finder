@@ -469,9 +469,32 @@ def find_ray_intersection(ray_start, ray_dir, curve_points):
     
     return closest_point, closest_index
 
+def generate_ellipse_curve(center, a, b, angle=0, num_points=100):
+    """Generate full ellipse curve from parameters"""
+    h, k = center
+    t = np.linspace(0, 2*np.pi, num_points)
+    
+    # Parametric ellipse equations
+    x_ellipse = a * np.cos(t)
+    y_ellipse = b * np.sin(t)
+    
+    # Apply rotation if needed
+    if angle != 0:
+        cos_angle = np.cos(angle)
+        sin_angle = np.sin(angle)
+        x_rot = x_ellipse * cos_angle - y_ellipse * sin_angle
+        y_rot = x_ellipse * sin_angle + y_ellipse * cos_angle
+        x_ellipse, y_ellipse = x_rot, y_rot
+    
+    # Translate to center
+    x_ellipse += h
+    y_ellipse += k
+    
+    return np.column_stack([x_ellipse, y_ellipse])
+
 def create_reflector_plot(main_points, sub_points, main_type, sub_type, 
                          main_focus, sub_foci, show_rays=False, ray_data=None,
-                         show_mirror=False):
+                         show_mirror=False, sub_params=None):
     """Create interactive plot of dual reflector system"""
     
     fig = go.Figure()
@@ -493,9 +516,23 @@ def create_reflector_plot(main_points, sub_points, main_type, sub_type,
             x=sub_points[:, 0],
             y=sub_points[:, 1],
             mode='lines+markers',
-            name=f'Sub Reflector ({sub_type})',
+            name=f'Sub Reflector ({sub_type}) - Data',
             line=dict(color='red', width=3),
             marker=dict(size=3)
+        ))
+    
+    # Plot fitted ellipse for sub-reflector if it's an ellipse
+    if sub_type == "Ellipse" and sub_params is not None:
+        h, k, a, b = sub_params
+        ellipse_points = generate_ellipse_curve((h, k), a, b)
+        
+        fig.add_trace(go.Scatter(
+            x=ellipse_points[:, 0],
+            y=ellipse_points[:, 1],
+            mode='lines',
+            name='Fitted Ellipse (Full)',
+            line=dict(color='pink', width=2, dash='dash'),
+            opacity=0.7
         ))
     
     # Plot main reflector focus
@@ -517,6 +554,16 @@ def create_reflector_plot(main_points, sub_points, main_type, sub_type,
                 mode='markers',
                 name='Sub Foci',
                 marker=dict(size=10, color='orange', symbol='diamond')
+            ))
+            
+            # Add lines connecting the foci
+            fig.add_trace(go.Scatter(
+                x=[sub_foci[0][0], sub_foci[1][0]],
+                y=[sub_foci[0][1], sub_foci[1][1]],
+                mode='lines',
+                name='Focal Axis',
+                line=dict(color='orange', width=1, dash='dot'),
+                showlegend=False
             ))
         else:  # Single focus (parabola)
             fig.add_trace(go.Scatter(
@@ -560,7 +607,7 @@ def create_reflector_plot(main_points, sub_points, main_type, sub_type,
         ))
     
     fig.update_layout(
-        title='Dual Reflector System Analysis - Original Curves',
+        title='Dual Reflector System Analysis - With Fitted Ellipse',
         xaxis_title='X (mm)',
         yaxis_title='Y (mm)',
         template='plotly_dark',
@@ -872,7 +919,7 @@ def main():
         # Create plot
         fig = create_reflector_plot(
             main_points, sub_points, main_type, sub_type,
-            main_focus, sub_foci, show_rays, ray_data, show_mirror=False
+            main_focus, sub_foci, show_rays, ray_data, show_mirror=False, sub_params=sub_params
         )
         
         st.plotly_chart(fig, use_container_width=True)
