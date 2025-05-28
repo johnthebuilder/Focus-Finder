@@ -656,32 +656,16 @@ def main():
     # Reflector type selection and orientation
     st.sidebar.header("🔍 Analysis Options")
     
-    # Rotation controls
-    st.sidebar.subheader("🔄 Orientation")
-    main_rotation = st.sidebar.slider(
-        "Main Reflector Rotation (°):",
+    # Global rotation control
+    st.sidebar.subheader("🔄 System Orientation")
+    global_rotation = st.sidebar.slider(
+        "Rotate Entire System (°):",
         min_value=-180,
         max_value=180,
-        value=90,  # Default to 90° for dish orientation
+        value=90,  # Default to 90° clockwise
         step=5,
-        help="Rotate main reflector curve (90° = dish opening upward)"
+        help="Rotate the entire coordinate system (both reflectors together)"
     )
-    
-    sub_rotation = st.sidebar.slider(
-        "Sub Reflector Rotation (°):",
-        min_value=-180,
-        max_value=180,
-        value=90,  # Default to 90° to match main reflector
-        step=5,
-        help="Rotate sub reflector curve"
-    )
-    
-    # Apply rotations
-    if main_rotation != 0:
-        main_points = rotate_points(main_points, main_rotation)
-    
-    if sub_rotation != 0:
-        sub_points = rotate_points(sub_points, sub_rotation)
     
     main_type = st.sidebar.selectbox(
         "Main Reflector Type:",
@@ -692,6 +676,11 @@ def main():
         "Sub Reflector Type:",
         ["Hyperbola", "Ellipse", "Parabola"]
     )
+    
+    # Apply global rotation to both reflectors
+    if global_rotation != 0:
+        main_points = rotate_points(main_points, global_rotation)
+        sub_points = rotate_points(sub_points, global_rotation)
     
     # Mirroring option
     show_mirror = st.sidebar.checkbox(
@@ -889,8 +878,8 @@ def main():
         st.subheader("Main Reflector")
         st.write(f"**Type:** {main_type}")
         st.write(f"**Points:** {len(main_points)}")
-        if main_rotation != 0:
-            st.write(f"**Rotation:** {main_rotation}°")
+        if global_rotation != 0:
+            st.write(f"**System Rotation:** {global_rotation}°")
         
         if main_focus is not None:
             if isinstance(main_focus, tuple) and len(main_focus) == 2 and not isinstance(main_focus[0], tuple):
@@ -912,8 +901,6 @@ def main():
         st.subheader("Sub Reflector")
         st.write(f"**Type:** {sub_type}")
         st.write(f"**Points:** {len(sub_points)}")
-        if sub_rotation != 0:
-            st.write(f"**Rotation:** {sub_rotation}°")
         
         if sub_foci is not None:
             if isinstance(sub_foci[0], tuple):  # Two foci
