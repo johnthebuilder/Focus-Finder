@@ -885,33 +885,114 @@ def main():
     elif input_method == "Manual Points":
         st.sidebar.subheader("✏️ Manual Input")
         
-        # Text areas for point input
-        main_text = st.sidebar.text_area(
-            "Main Reflector Points (x,y per line):",
-            value="0,0\n10,2\n20,8\n30,18",
-            help="Enter x,y coordinates, one pair per line"
+        # Option to input polynomial coefficients directly
+        input_type = st.sidebar.radio(
+            "Input Type:",
+            ["XY Coordinates", "Polynomial Coefficients"]
         )
         
-        sub_text = st.sidebar.text_area(
-            "Sub Reflector Points (x,y per line):",
-            value="5,15\n10,12\n15,15",
-            help="Enter x,y coordinates, one pair per line"
-        )
+        if input_type == "Polynomial Coefficients":
+            st.sidebar.write("**Choose Reflector:**")
+            poly_target = st.sidebar.selectbox("Polynomial for:", ["Sub Reflector (4th order)", "Main Reflector (3rd order)"])
+            
+            if poly_target == "Sub Reflector (4th order)":
+                st.sidebar.write("**Sub: y = As/10000×x⁴ + Bs/100×x³ + Cs/10×x² + Ds/10×x + Es**")
+                
+                # Sub reflector coefficients from your data
+                As = st.sidebar.number_input("As:", value=-1.257614832, format="%.9f")
+                Bs = st.sidebar.number_input("Bs:", value=0.919978748, format="%.9f") 
+                Cs = st.sidebar.number_input("Cs:", value=-1.768773487, format="%.9f")
+                Ds = st.sidebar.number_input("Ds:", value=7.000282416, format="%.9f")
+                Es = st.sidebar.number_input("Es:", value=2.23545, format="%.5f")
+                
+                # X range for sub reflector
+                x_min = st.sidebar.number_input("X Min:", value=0.0, step=0.1)
+                x_max = st.sidebar.number_input("X Max:", value=5.0, step=0.1)
+                num_points = st.sidebar.slider("Number of Points:", 10, 100, 50)
+                
+                # Generate sub reflector curve
+                x_vals = np.linspace(x_min, x_max, num_points)
+                y_vals = (As/10000.0 * x_vals**4 + 
+                         Bs/100.0 * x_vals**3 + 
+                         Cs/10.0 * x_vals**2 + 
+                         Ds/10.0 * x_vals + 
+                         Es)
+                
+                sub_points = np.column_stack([x_vals, y_vals])
+                st.sidebar.success(f"Sub: {len(sub_points)} points generated from 4th order polynomial")
+                
+            else:  # Main Reflector
+                st.sidebar.write("**Main: y = Am/100000×x³ + Bm/1000×x² + Cm×x/100 + Dm/10 - 30**")
+                
+                # Main reflector coefficients from your data
+                Am = st.sidebar.number_input("Am:", value=-1.409451197, format="%.9f")
+                Bm = st.sidebar.number_input("Bm:", value=9.21575011, format="%.8f") 
+                Cm = st.sidebar.number_input("Cm:", value=-8.360930461, format="%.9f")
+                Dm = st.sidebar.number_input("Dm:", value=1.894145843, format="%.9f")
+                
+                # X range for main reflector
+                x_min = st.sidebar.number_input("X Min:", value=5.0, step=0.5)
+                x_max = st.sidebar.number_input("X Max:", value=47.5, step=0.5)
+                num_points = st.sidebar.slider("Number of Points:", 20, 200, 100)
+                
+                # Generate main reflector curve
+                x_vals = np.linspace(x_min, x_max, num_points)
+                y_vals = (Am/100000.0 * x_vals**3 + 
+                         Bm/1000.0 * x_vals**2 + 
+                         Cm * x_vals/100.0 + 
+                         Dm/10.0 - 30.0)
+                
+                main_points = np.column_stack([x_vals, y_vals])
+                st.sidebar.success(f"Main: {len(main_points)} points generated from 3rd order polynomial")
+            
+            # Option to generate both at once
+            if st.sidebar.button("🔄 Generate Both Reflectors"):
+                # Sub reflector
+                As, Bs, Cs, Ds, Es = -1.257614832, 0.919978748, -1.768773487, 7.000282416, 2.23545
+                x_sub = np.linspace(0.0, 5.0, 50)
+                y_sub = (As/10000.0 * x_sub**4 + Bs/100.0 * x_sub**3 + 
+                        Cs/10.0 * x_sub**2 + Ds/10.0 * x_sub + Es)
+                sub_points = np.column_stack([x_sub, y_sub])
+                
+                # Main reflector  
+                Am, Bm, Cm, Dm = -1.409451197, 9.21575011, -8.360930461, 1.894145843
+                x_main = np.linspace(5.0, 47.5, 100)
+                y_main = (Am/100000.0 * x_main**3 + Bm/1000.0 * x_main**2 + 
+                         Cm * x_main/100.0 + Dm/10.0 - 30.0)
+                main_points = np.column_stack([x_main, y_main])
+                
+                st.sidebar.success("✅ Both reflectors generated!")
+                st.sidebar.write(f"Main: {len(main_points)} points")
+                st.sidebar.write(f"Sub: {len(sub_points)} points")
         
-        # Parse manual input
-        try:
-            main_lines = [line.strip() for line in main_text.split('\n') if line.strip()]
-            main_points = np.array([[float(x) for x in line.split(',')] for line in main_lines])
-        except:
-            st.sidebar.error("Invalid main reflector points format")
-            main_points = np.array([[0, 0]])
-        
-        try:
-            sub_lines = [line.strip() for line in sub_text.split('\n') if line.strip()]
-            sub_points = np.array([[float(x) for x in line.split(',')] for line in sub_lines])
-        except:
-            st.sidebar.error("Invalid sub reflector points format")
-            sub_points = np.array([[0, 0]])
+        else:
+            # Original XY coordinate input
+            main_text = st.sidebar.text_area(
+                "Main Reflector Points (x,y per line):",
+                value="0,0\n10,2\n20,8\n30,18",
+                help="Enter x,y coordinates, one pair per line"
+            )
+            
+            sub_text = st.sidebar.text_area(
+                "Sub Reflector Points (x,y per line):",
+                value="5,15\n10,12\n15,15",
+                help="Enter x,y coordinates, one pair per line"
+            )
+            
+            # Parse manual input
+            try:
+                main_lines = [line.strip() for line in main_text.split('\n') if line.strip()]
+                main_points = np.array([[float(x) for x in line.split(',')] for line in main_lines])
+            except:
+                st.sidebar.error("Invalid main reflector points format")
+                main_points = np.array([[0, 0]])
+            
+            try:
+                sub_lines = [line.strip() for line in sub_text.split('\n') if line.strip()]
+                sub_points = np.array([[float(x) for x in line.split(',')] for line in sub_lines])
+            except:
+                st.sidebar.error("Invalid sub reflector points format")
+                sub_points = np.array([[0, 0]])
     
     else:  # Theoretical Curves
         st.sidebar.subheader("📐 Theoretical Parameters")
@@ -1166,11 +1247,39 @@ def main():
                 convergence_y = np.std(final_points[:, 1])
                 st.info(f"**Convergence (σx):** {convergence_x:.3f}")
                 st.info(f"**Convergence (σy):** {convergence_y:.3f}")
+                
+                # Estimate antenna gain based on convergence
+                # Tighter convergence = higher gain (rough approximation)
+                convergence_total = np.sqrt(convergence_x**2 + convergence_y**2)
+                if convergence_total < 1.0:
+                    gain_estimate = 55 + (1.0 - convergence_total) * 5
+                    st.success(f"**Estimated Gain:** ~{gain_estimate:.1f} dBi")
+                elif convergence_total < 3.0:
+                    gain_estimate = 52 + (3.0 - convergence_total) * 1.5
+                    st.info(f"**Estimated Gain:** ~{gain_estimate:.1f} dBi")
+                else:
+                    st.warning(f"**Poor Focus:** Convergence = {convergence_total:.2f}")
             
             st.write("**Ray Path Info:**")
             for i, ray_path in enumerate(ray_data[:3]):  # Show first 3 rays
                 if len(ray_path) >= 3:
                     st.write(f"Ray {i+1}: {len(ray_path)} segments")
+        
+        # Optimization context
+        st.subheader("📊 Optimization Context")
+        st.info("""
+        **Your Data Context:**
+        - **Main Reflector:** 3rd order polynomial optimized for gain
+        - **Sub Reflector:** 4th order polynomial with diameter optimization
+        - **Gain Results:** 51-57 dBi depending on frequency and sub size
+        - **Optimization:** Post-processed for maximum directivity
+        """)
+        
+        if sub_type == "Force Ellipse" or sub_type == "Ellipse":
+            st.warning("""
+            ⚠️ **Note:** Your curves are polynomial-optimized, not true conics.
+            Ellipse fitting provides approximate focus locations for analysis.
+            """)
         
         # System analysis
         st.subheader("System Analysis")
