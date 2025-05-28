@@ -1,0 +1,21 @@
+# Dual Reflector Focus Finder - Requirements
+# Core web framework
+streamlit>=1.28.0
+
+# Numerical computing and data manipulation
+numpy>=1.24.0
+pandas>=2.0.0
+scipy>=1.10.0
+
+# Interactive plotting
+plotly>=5.15.0
+
+# Image processing (for potential future features)
+Pillow>=9.5.0
+
+# Optional: Enhanced DXF parsing (if needed for more complex DXF files)
+# ezdxf>=1.0.0
+
+# Optional: For better curve fitting and geometric analysis
+# scikit-learn>=1.3.0
+# matplotlib>=3.7.0
