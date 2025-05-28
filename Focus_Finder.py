@@ -121,8 +121,8 @@ def rotate_points(points, angle_deg):
     
     return np.dot(points, rotation_matrix.T)
 
-def fit_parabola(points):
-    """Fit parabola to points - handles both orientations"""
+def fit_parabola_advanced(points):
+    """Advanced parabola fitting for polynomial-optimized curves"""
     if len(points) < 3:
         return None, None
     
@@ -130,44 +130,107 @@ def fit_parabola(points):
         x = points[:, 0]
         y = points[:, 1]
         
-        # Determine if parabola opens vertically or horizontally
-        x_range = np.ptp(x)
-        y_range = np.ptp(y)
+        # For your main reflector, it's a dish opening upward (concave up)
+        # The polynomial is: y = Am/100000×x³ + Bm/1000×x² + Cm×x/100 + Dm/10 - 30
+        # For a dish, we expect the focus to be above the vertex
         
-        if y_range > x_range:  # Vertical parabola: x = ay² + by + c
-            # Fit x = ay² + by + c
-            def parabola_vertical(y, a, b, c):
-                return a * y**2 + b * y + c
-            
-            popt, _ = curve_fit(parabola_vertical, y, x)
-            a, b, c = popt
-            
-            # Calculate focus for vertical parabola x = ay² + by + c
-            k = -b / (2 * a)  # vertex y
-            h = c - b**2 / (4 * a)  # vertex x
-            
-            # Focus is at (h + 1/(4a), k)
-            focus_x = h + 1 / (4 * a)
-            focus_y = k
-            
-        else:  # Horizontal parabola: y = ax² + bx + c
-            def parabola_horizontal(x, a, b, c):
-                return a * x**2 + b * x + c
-            
-            popt, _ = curve_fit(parabola_horizontal, x, y)
-            a, b, c = popt
-            
-            # Calculate focus for horizontal parabola y = ax² + bx + c
-            h = -b / (2 * a)  # vertex x
-            k = c - b**2 / (4 * a)  # vertex y
-            
-            # Focus is at (h, k + 1/(4a))
-            focus_x = h
-            focus_y = k + 1 / (4 * a)
+        # Find the vertex (lowest point for upward-opening dish)
+        vertex_idx = np.argmin(y)
+        vertex_x = x[vertex_idx]
+        vertex_y = y[vertex_idx]
         
-        return (focus_x, focus_y), popt
-    except:
+        # For polynomial curves, estimate the effective focal length
+        # by fitting a parabola to points near the vertex
+        
+        # Use points within 20% of the total span around the vertex
+        x_span = np.max(x) - np.min(x)
+        mask = np.abs(x - vertex_x) <= x_span * 0.2
+        
+        if np.sum(mask) >= 3:
+            x_local = x[mask]
+            y_local = y[mask]
+            
+            # Translate to vertex coordinates
+            x_rel = x_local - vertex_x
+            y_rel = y_local - vertex_y
+            
+            # Fit parabola y = ax² near vertex
+            try:
+                # Use only the x² term for better focus estimation
+                A = x_rel[:, np.newaxis]**2
+                a_coeff = np.linalg.lstsq(A, y_rel, rcond=None)[0][0]
+                
+                if a_coeff > 0:  # Upward opening parabola
+                    # For y = ax², focus is at (0, 1/(4a)) relative to vertex
+                    focal_distance = 1 / (4 * a_coeff)
+                    focus_x = vertex_x
+                    focus_y = vertex_y + focal_distance
+                    
+                    return (focus_x, focus_y), (a_coeff, vertex_x, vertex_y)
+            except:
+                pass
+        
+        # Fallback: estimate focus from curvature
+        # For a dish, focus should be above the vertex
+        y_range = np.max(y) - np.min(y)
+        estimated_focal_length = x_span / 4  # Rough estimate
+        focus_x = vertex_x
+        focus_y = vertex_y + estimated_focal_length
+        
+        return (focus_x, focus_y), None
+        
+    except Exception as e:
         return None, None
+
+def trace_ray_path_improved(start_point, direction, main_points, sub_points):
+    """Improved ray tracing with better visualization"""
+    ray_path = [np.array(start_point)]
+    current_pos = np.array(start_point)
+    current_dir = np.array(direction)
+    current_dir = current_dir / np.linalg.norm(current_dir)
+    
+    # Trace ray to main reflector first
+    main_hit, main_index = find_ray_intersection(current_pos, current_dir, main_points)
+    
+    if main_hit is not None and main_index is not None:
+        ray_path.append(main_hit)
+        
+        # Calculate reflection off main reflector
+        main_normal = get_surface_normal(main_points, main_index)
+        
+        # Ensure normal points outward (for a dish, upward and outward)
+        # Check if normal points toward incident ray, if so flip it
+        if np.dot(main_normal, -current_dir) < 0:
+            main_normal = -main_normal
+        
+        reflected_dir = reflect_ray(current_dir, main_normal)
+        
+        # Trace reflected ray to sub reflector
+        sub_hit, sub_index = find_ray_intersection(main_hit, reflected_dir, sub_points)
+        
+        if sub_hit is not None and sub_index is not None:
+            ray_path.append(sub_hit)
+            
+            # Calculate reflection off sub reflector
+            sub_normal = get_surface_normal(sub_points, sub_index)
+            
+            # For sub-reflector, normal should point away from main dish
+            # Check orientation and flip if needed
+            to_main = main_hit - sub_hit
+            if np.dot(sub_normal, to_main) < 0:
+                sub_normal = -sub_normal
+            
+            final_dir = reflect_ray(reflected_dir, sub_normal)
+            
+            # Extend final ray - this should converge to the system focus
+            final_point = sub_hit + final_dir * 15  # Extend 15 units
+            ray_path.append(final_point)
+        else:
+            # If no sub hit, extend the reflected ray
+            extended_point = main_hit + reflected_dir * 20
+            ray_path.append(extended_point)
+    
+    return ray_path
 
 def fit_ellipse_robust(points):
     """Robust ellipse fitting using direct least squares method"""
@@ -776,22 +839,65 @@ def create_reflector_plot(main_points, sub_points, main_type, sub_type,
                 marker=dict(size=12, color='orange', symbol='diamond')
             ))
     
-    # Plot ray paths
+    # Plot ray paths with different colors for each segment
     if ray_data is not None and len(ray_data) > 0:
         for i, ray_path in enumerate(ray_data):
             if len(ray_path) > 1:
                 ray_x = [p[0] for p in ray_path]
                 ray_y = [p[1] for p in ray_path]
                 
-                fig.add_trace(go.Scatter(
-                    x=ray_x,
-                    y=ray_y,
-                    mode='lines+markers',
-                    name=f'Ray {i+1}' if len(ray_data) <= 5 else None,
-                    line=dict(color='lime', width=2),
-                    marker=dict(size=4, color='lime'),
-                    showlegend=(i < 3)  # Only show legend for first 3 rays
-                ))
+                # Different colors for different ray segments
+                if len(ray_path) >= 4:  # Complete path: start -> main -> sub -> final
+                    # Incident ray (start to main)
+                    fig.add_trace(go.Scatter(
+                        x=[ray_x[0], ray_x[1]],
+                        y=[ray_y[0], ray_y[1]],
+                        mode='lines',
+                        name=f'Incident Ray {i+1}' if i == 0 else None,
+                        line=dict(color='cyan', width=3),
+                        showlegend=(i == 0)
+                    ))
+                    
+                    # Reflected ray (main to sub)
+                    fig.add_trace(go.Scatter(
+                        x=[ray_x[1], ray_x[2]],
+                        y=[ray_y[1], ray_y[2]],
+                        mode='lines',
+                        name=f'Main→Sub Ray {i+1}' if i == 0 else None,
+                        line=dict(color='yellow', width=3),
+                        showlegend=(i == 0)
+                    ))
+                    
+                    # Final ray (sub to focus)
+                    fig.add_trace(go.Scatter(
+                        x=[ray_x[2], ray_x[3]],
+                        y=[ray_y[2], ray_y[3]],
+                        mode='lines',
+                        name=f'Final Ray {i+1}' if i == 0 else None,
+                        line=dict(color='lime', width=3),
+                        showlegend=(i == 0)
+                    ))
+                    
+                    # Add markers at reflection points
+                    fig.add_trace(go.Scatter(
+                        x=[ray_x[1], ray_x[2]],
+                        y=[ray_y[1], ray_y[2]],
+                        mode='markers',
+                        name='Reflection Points' if i == 0 else None,
+                        marker=dict(size=8, color='orange', symbol='circle'),
+                        showlegend=(i == 0)
+                    ))
+                else:
+                    # Simpler path
+                    fig.add_trace(go.Scatter(
+                        x=ray_x,
+                        y=ray_y,
+                        mode='lines+markers',
+                        name=f'Ray {i+1}' if len(ray_data) <= 5 else None,
+                        line=dict(color='lime', width=2),
+                        marker=dict(size=4, color='lime'),
+                        showlegend=(i < 3)
+                    ))
     
     # Add axis of symmetry
     if len(main_points) > 0 or len(sub_points) > 0:
@@ -1089,7 +1195,7 @@ def main():
         main_params = None
         
         if main_type == "Parabola":
-            main_focus, main_params = fit_parabola(main_points)
+            main_focus, main_params = fit_parabola_advanced(main_points)
         
         # Analyze sub reflector
         sub_foci = None
@@ -1127,7 +1233,7 @@ def main():
                     offset = (i - num_rays // 2) * ray_spacing
                     start_point = [center_x + offset, start_y]
                     
-                    ray_path = trace_ray_path(start_point, ray_direction, main_points, sub_points)
+                    ray_path = trace_ray_path_improved(start_point, ray_direction, main_points, sub_points)
                     if len(ray_path) > 1:
                         ray_data.append(ray_path)
             else:  # Nearly horizontal rays
@@ -1139,7 +1245,7 @@ def main():
                     offset = (i - num_rays // 2) * ray_spacing
                     start_point = [start_x, center_y + offset]
                     
-                    ray_path = trace_ray_path(start_point, ray_direction, main_points, sub_points)
+                    ray_path = trace_ray_path_improved(start_point, ray_direction, main_points, sub_points)
                     if len(ray_path) > 1:
                         ray_data.append(ray_path)
         
