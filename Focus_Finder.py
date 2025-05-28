@@ -417,7 +417,7 @@ def fit_ellipse_through_points(points):
         if discriminant >= 0:
             st.warning("Fitted curve is not an ellipse (discriminant >= 0)")
             # Try alternative method
-            return fit_ellipse_geometric(points)
+            return fit_ellipse_force(points)
         
         # Convert to center and axis form
         # Calculate center
@@ -477,43 +477,66 @@ def fit_ellipse_through_points(points):
         st.error(f"Ellipse fitting error: {str(e)}")
         return fit_ellipse_geometric(points)
 
-def fit_ellipse_geometric(points):
-    """Geometric ellipse fitting - fallback method"""
+def fit_ellipse_force(points):
+    """Force fit any curve to an ellipse shape - even if it's not truly elliptical"""
+    if len(points) < 3:
+        return None, None
+    
     try:
         x = points[:, 0]
         y = points[:, 1]
         
-        # Simple geometric approach
-        # Assume the points represent a section of an ellipse
-        
-        # Find the extreme points
+        # Method 1: Bounding box approach with center estimation
         x_min, x_max = np.min(x), np.max(x)
         y_min, y_max = np.min(y), np.max(y)
         
-        # Estimate center from the midpoint of extremes
-        h = (x_min + x_max) / 2
-        k = (y_min + y_max) / 2
+        # Find the center by analyzing the curve shape
+        # Use weighted centroid based on distance from extremes
+        weights = 1.0 / (1.0 + 0.1 * (np.abs(x - (x_min + x_max)/2) + np.abs(y - (y_min + y_max)/2)))
+        h = np.average(x, weights=weights)
+        k = np.average(y, weights=weights)
         
-        # Estimate semi-axes
-        # For a partial ellipse, we need to extrapolate
-        x_span = x_max - x_min
-        y_span = y_max - y_min
-        
-        # Calculate distances from center to data points
+        # Calculate distances from center to all points
         distances = np.sqrt((x - h)**2 + (y - k)**2)
-        max_dist = np.max(distances)
+        angles = np.arctan2(y - k, x - h)
         
-        # Estimate axes based on data spread and maximum distance
-        a = max(x_span / 1.5, max_dist * 1.2)  # Semi-major axis
-        b = max(y_span / 1.5, max_dist * 0.8)   # Semi-minor axis
+        # Fit an ellipse by finding the best a and b that minimize distance errors
+        # For each point, calculate what the ellipse radius should be at that angle
+        
+        # Estimate initial semi-axes
+        x_spread = (x_max - x_min) / 2
+        y_spread = (y_max - y_min) / 2
+        
+        # Use the maximum extent as initial guess
+        a_init = max(x_spread, np.max(distances)) * 1.1
+        b_init = max(y_spread, np.max(distances)) * 0.9
         
         # Ensure a >= b
+        if b_init > a_init:
+            a_init, b_init = b_init, a_init
+        
+        # Refine using the actual data points
+        # Calculate what a and b should be to best fit the points
+        cos_angles = np.cos(angles)
+        sin_angles = np.sin(angles)
+        
+        # For each point, if it were on an ellipse: r = ab/sqrt((b*cos(θ))² + (a*sin(θ))²)
+        # Rearrange to estimate a and b
+        
+        # Use robust estimation
+        a = np.percentile(distances / np.sqrt(sin_angles**2 + (cos_angles * b_init/a_init)**2), 80)
+        b = np.percentile(distances / np.sqrt((sin_angles * a_init/b_init)**2 + cos_angles**2), 80)
+        
+        # Ensure reasonable values
+        a = max(a, x_spread * 1.2)
+        b = max(b, y_spread * 1.2)
+        
         if b > a:
             a, b = b, a
         
         # Calculate foci
-        if a > b and a > 0:
-            c = np.sqrt(a**2 - b**2)
+        if a > b and a > 1e-6:
+            c = np.sqrt(max(0, a**2 - b**2))
             focus1 = (h + c, k)
             focus2 = (h - c, k)
         else:
@@ -521,8 +544,139 @@ def fit_ellipse_geometric(points):
         
         return (focus1, focus2), (h, k, a, b, 0)
         
-    except:
-        return None, None
+    except Exception as e:
+        # Simple fallback
+        h, k = np.mean(x), np.mean(y)
+        a = np.std(x) * 3
+        b = np.std(y) * 3
+        if b > a:
+            a, b = b, a
+        
+        if a > b:
+            c = np.sqrt(a**2 - b**2)
+            focus1 = (h + c, k)
+            focus2 = (h - c, k)
+        else:
+            focus1 = focus2 = (h, k)
+        
+        return (focus1, focus2), (h, k, a, b, 0)
+
+def reflect_ray(incident_dir, normal):
+    """Calculate reflected ray direction using law of reflection"""
+    incident_dir = np.array(incident_dir)
+    normal = np.array(normal)
+    
+    # Ensure normal is normalized
+    normal = normal / np.linalg.norm(normal)
+    
+    dot_product = np.dot(incident_dir, normal)
+    reflected = incident_dir - 2 * dot_product * normal
+    
+    return reflected / np.linalg.norm(reflected)
+
+def get_surface_normal(points, index):
+    """Calculate surface normal at a point on the curve"""
+    if index == 0:
+        # Use forward difference at start
+        dx = points[1, 0] - points[0, 0]
+        dy = points[1, 1] - points[0, 1]
+    elif index == len(points) - 1:
+        # Use backward difference at end
+        dx = points[-1, 0] - points[-2, 0]
+        dy = points[-1, 1] - points[-2, 1]
+    else:
+        # Use central difference in middle
+        dx = points[index + 1, 0] - points[index - 1, 0]
+        dy = points[index + 1, 1] - points[index - 1, 1]
+    
+    # Tangent vector
+    if dx == 0 and dy == 0:
+        return np.array([0, 1])  # Default normal
+    
+    tangent = np.array([dx, dy])
+    tangent = tangent / np.linalg.norm(tangent)
+    
+    # Normal is perpendicular to tangent (rotate 90 degrees)
+    normal = np.array([-tangent[1], tangent[0]])
+    
+    return normal
+
+def find_ray_intersection(ray_start, ray_dir, curve_points):
+    """Find intersection of ray with curve using line-segment intersection"""
+    ray_start = np.array(ray_start)
+    ray_dir = np.array(ray_dir)
+    
+    min_distance = float('inf')
+    closest_point = None
+    closest_index = None
+    
+    # Check intersection with each line segment of the curve
+    for i in range(len(curve_points) - 1):
+        p1 = curve_points[i]
+        p2 = curve_points[i + 1]
+        
+        # Parametric line equations:
+        # Ray: ray_start + t * ray_dir
+        # Segment: p1 + s * (p2 - p1), where 0 <= s <= 1
+        
+        seg_dir = p2 - p1
+        
+        # Set up system of equations
+        A = np.array([[ray_dir[0], -seg_dir[0]], 
+                      [ray_dir[1], -seg_dir[1]]])
+        b = p1 - ray_start
+        
+        try:
+            if abs(np.linalg.det(A)) > 1e-10:  # Non-parallel lines
+                params = np.linalg.solve(A, b)
+                t, s = params[0], params[1]
+                
+                # Check if intersection is valid (forward ray, within segment)
+                if t > 1e-6 and 0 <= s <= 1:  # t > small epsilon to avoid self-intersection
+                    intersection = ray_start + t * ray_dir
+                    distance = t
+                    
+                    if distance < min_distance:
+                        min_distance = distance
+                        closest_point = intersection
+                        closest_index = i
+        except np.linalg.LinAlgError:
+            continue
+    
+    return closest_point, closest_index
+
+def trace_ray_path(start_point, direction, main_points, sub_points):
+    """Trace a ray through the dual reflector system"""
+    ray_path = [start_point]
+    current_pos = np.array(start_point)
+    current_dir = np.array(direction)
+    current_dir = current_dir / np.linalg.norm(current_dir)
+    
+    # Trace ray to main reflector first
+    main_hit, main_index = find_ray_intersection(current_pos, current_dir, main_points)
+    
+    if main_hit is not None:
+        ray_path.append(main_hit)
+        
+        # Calculate reflection off main reflector
+        main_normal = get_surface_normal(main_points, main_index)
+        reflected_dir = reflect_ray(current_dir, main_normal)
+        
+        # Trace reflected ray to sub reflector
+        sub_hit, sub_index = find_ray_intersection(main_hit, reflected_dir, sub_points)
+        
+        if sub_hit is not None:
+            ray_path.append(sub_hit)
+            
+            # Calculate reflection off sub reflector
+            sub_normal = get_surface_normal(sub_points, sub_index)
+            final_dir = reflect_ray(reflected_dir, sub_normal)
+            
+            # Extend final ray
+            final_point = sub_hit + final_dir * 20  # Extend 20 units
+            ray_path.append(final_point)
+    
+    return ray_path
 
 def create_reflector_plot(main_points, sub_points, main_type, sub_type, 
                          main_focus, sub_foci, show_rays=False, ray_data=None,
@@ -621,6 +775,23 @@ def create_reflector_plot(main_points, sub_points, main_type, sub_type,
                 name='Sub Focus',
                 marker=dict(size=12, color='orange', symbol='diamond')
             ))
+    
+    # Plot ray paths
+    if ray_data is not None and len(ray_data) > 0:
+        for i, ray_path in enumerate(ray_data):
+            if len(ray_path) > 1:
+                ray_x = [p[0] for p in ray_path]
+                ray_y = [p[1] for p in ray_path]
+                
+                fig.add_trace(go.Scatter(
+                    x=ray_x,
+                    y=ray_y,
+                    mode='lines+markers',
+                    name=f'Ray {i+1}' if len(ray_data) <= 5 else None,
+                    line=dict(color='lime', width=2),
+                    marker=dict(size=4, color='lime'),
+                    showlegend=(i < 3)  # Only show legend for first 3 rays
+                ))
     
     # Add axis of symmetry
     if len(main_points) > 0 or len(sub_points) > 0:
@@ -837,15 +1008,57 @@ def main():
         sub_params = None
         fitted_curve = None
         
-        if sub_type == "Ellipse":
+        if sub_type == "Force Ellipse":
+            sub_foci, sub_params = fit_ellipse_force(sub_points)
+        elif sub_type == "Ellipse":
             sub_foci, sub_params = fit_ellipse_through_points(sub_points)
         elif sub_type == "Polynomial":
             sub_foci, fitted_curve = fit_polynomial_curve(sub_points, degree=3)
         
+        # Generate ray data if ray tracing is enabled
+        ray_data = None
+        if show_rays and len(main_points) > 0 and len(sub_points) > 0:
+            ray_data = []
+            
+            # Calculate ray starting positions
+            all_points = np.vstack([main_points, sub_points])
+            x_min, x_max = np.min(all_points[:, 0]), np.max(all_points[:, 0])
+            y_min, y_max = np.min(all_points[:, 1]), np.max(all_points[:, 1])
+            
+            # Ray direction from angle
+            ray_angle_rad = np.radians(ray_angle)
+            ray_direction = [np.sin(ray_angle_rad), -np.cos(ray_angle_rad)]
+            
+            # Starting positions for parallel rays
+            if abs(ray_angle) > 45:  # Nearly vertical rays
+                # Start from above
+                center_x = (x_min + x_max) / 2
+                start_y = y_max + ray_start_distance
+                
+                for i in range(num_rays):
+                    offset = (i - num_rays // 2) * ray_spacing
+                    start_point = [center_x + offset, start_y]
+                    
+                    ray_path = trace_ray_path(start_point, ray_direction, main_points, sub_points)
+                    if len(ray_path) > 1:
+                        ray_data.append(ray_path)
+            else:  # Nearly horizontal rays
+                # Start from left/right
+                center_y = (y_min + y_max) / 2
+                start_x = x_min - ray_start_distance if ray_angle >= 0 else x_max + ray_start_distance
+                
+                for i in range(num_rays):
+                    offset = (i - num_rays // 2) * ray_spacing
+                    start_point = [start_x, center_y + offset]
+                    
+                    ray_path = trace_ray_path(start_point, ray_direction, main_points, sub_points)
+                    if len(ray_path) > 1:
+                        ray_data.append(ray_path)
+        
         # Create plot
         fig = create_reflector_plot(
             main_points, sub_points, main_type, sub_type,
-            main_focus, sub_foci, show_rays=False, ray_data=None, 
+            main_focus, sub_foci, show_rays, ray_data, 
             sub_params=sub_params, fitted_curve=fitted_curve
         )
         
@@ -892,7 +1105,7 @@ def main():
         else:
             st.warning("Could not determine foci")
         
-        if sub_params is not None and sub_type == "Ellipse":
+        if sub_params is not None and (sub_type == "Ellipse" or sub_type == "Force Ellipse"):
             st.write("**Ellipse Parameters:**")
             if len(sub_params) == 5:
                 h, k, a, b, theta = sub_params
@@ -902,6 +1115,8 @@ def main():
                 st.write(f"Rotation: {np.degrees(theta):.1f}°")
                 eccentricity = np.sqrt(1 - (b**2)/(a**2)) if a > 0 else 0
                 st.write(f"Eccentricity: {eccentricity:.3f}")
+                if sub_type == "Force Ellipse":
+                    st.warning("⚠️ Force-fitted ellipse - may not represent true geometry")
             else:
                 h, k, a, b = sub_params
                 st.write(f"Center: ({h:.3f}, {k:.3f})")
@@ -909,6 +1124,8 @@ def main():
                 st.write(f"Semi-minor axis (b): {b:.3f}")
                 eccentricity = np.sqrt(1 - (b**2)/(a**2)) if a > 0 else 0
                 st.write(f"Eccentricity: {eccentricity:.3f}")
+                if sub_type == "Force Ellipse":
+                    st.warning("⚠️ Force-fitted ellipse - may not represent true geometry")
         
         elif fitted_curve is not None and sub_type == "Polynomial":
             st.write("**Polynomial Parameters:**")
@@ -923,6 +1140,30 @@ def main():
                 else:
                     st.write(f"x^{power}: {coeff:.6f}")
             st.info("⚠️ Polynomial fit - focus is approximate")
+        
+        # Ray tracing results
+        if show_rays and ray_data:
+            st.subheader("Ray Tracing")
+            st.write(f"**Rays Traced:** {len(ray_data)}")
+            st.write(f"**Incident Angle:** {ray_angle}°")
+            
+            # Analyze ray convergence
+            final_points = []
+            for ray_path in ray_data:
+                if len(ray_path) >= 4:  # Start, main hit, sub hit, final
+                    final_points.append(ray_path[-1])
+            
+            if len(final_points) > 1:
+                final_points = np.array(final_points)
+                convergence_x = np.std(final_points[:, 0])
+                convergence_y = np.std(final_points[:, 1])
+                st.info(f"**Convergence (σx):** {convergence_x:.3f}")
+                st.info(f"**Convergence (σy):** {convergence_y:.3f}")
+            
+            st.write("**Ray Path Info:**")
+            for i, ray_path in enumerate(ray_data[:3]):  # Show first 3 rays
+                if len(ray_path) >= 3:
+                    st.write(f"Ray {i+1}: {len(ray_path)} segments")
         
         # System analysis
         st.subheader("System Analysis")
