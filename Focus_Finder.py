@@ -105,7 +105,7 @@ def parse_dxf_points(dxf_content):
     return np.array(points) if points else np.array([[0, 0]])
 
 def fit_parabola(points):
-    """Fit parabola y = ax² + bx + c to points"""
+    """Fit parabola to points - handles both orientations"""
     if len(points) < 3:
         return None, None
     
@@ -113,21 +113,40 @@ def fit_parabola(points):
         x = points[:, 0]
         y = points[:, 1]
         
-        # Fit parabola
-        def parabola(x, a, b, c):
-            return a * x**2 + b * x + c
+        # Determine if parabola opens vertically or horizontally
+        x_range = np.ptp(x)
+        y_range = np.ptp(y)
         
-        popt, _ = curve_fit(parabola, x, y)
-        a, b, c = popt
-        
-        # Calculate focus for parabola y = ax² + bx + c
-        # Convert to vertex form and find focus
-        h = -b / (2 * a)  # vertex x
-        k = c - b**2 / (4 * a)  # vertex y
-        
-        # Focus is at (h, k + 1/(4a))
-        focus_x = h
-        focus_y = k + 1 / (4 * a)
+        if y_range > x_range:  # Vertical parabola: x = ay² + by + c
+            # Fit x = ay² + by + c
+            def parabola_vertical(y, a, b, c):
+                return a * y**2 + b * y + c
+            
+            popt, _ = curve_fit(parabola_vertical, y, x)
+            a, b, c = popt
+            
+            # Calculate focus for vertical parabola x = ay² + by + c
+            k = -b / (2 * a)  # vertex y
+            h = c - b**2 / (4 * a)  # vertex x
+            
+            # Focus is at (h + 1/(4a), k)
+            focus_x = h + 1 / (4 * a)
+            focus_y = k
+            
+        else:  # Horizontal parabola: y = ax² + bx + c
+            def parabola_horizontal(x, a, b, c):
+                return a * x**2 + b * x + c
+            
+            popt, _ = curve_fit(parabola_horizontal, x, y)
+            a, b, c = popt
+            
+            # Calculate focus for horizontal parabola y = ax² + bx + c
+            h = -b / (2 * a)  # vertex x
+            k = c - b**2 / (4 * a)  # vertex y
+            
+            # Focus is at (h, k + 1/(4a))
+            focus_x = h
+            focus_y = k + 1 / (4 * a)
         
         return (focus_x, focus_y), popt
     except:
@@ -643,16 +662,16 @@ def main():
         "Main Reflector Rotation (°):",
         min_value=-180,
         max_value=180,
-        value=0,
+        value=90,  # Default to 90° for dish orientation
         step=5,
-        help="Rotate main reflector curve"
+        help="Rotate main reflector curve (90° = dish opening upward)"
     )
     
     sub_rotation = st.sidebar.slider(
         "Sub Reflector Rotation (°):",
         min_value=-180,
         max_value=180,
-        value=0,
+        value=90,  # Default to 90° to match main reflector
         step=5,
         help="Rotate sub reflector curve"
     )
@@ -705,11 +724,11 @@ def main():
         
         ray_angle = st.sidebar.slider(
             "Incident Angle (°):",
-            min_value=-45.0,
-            max_value=45.0,
-            value=0.0,
-            step=1.0,
-            help="Angle of incoming rays (0° = horizontal)"
+            min_value=-90.0,
+            max_value=90.0,
+            value=-90.0,  # Default to vertical downward rays
+            step=5.0,
+            help="Angle of incoming rays (-90° = from above, 0° = horizontal)"
         )
         
         ray_start_distance = st.sidebar.slider(
@@ -763,19 +782,33 @@ def main():
             
             # Ray direction from angle
             ray_angle_rad = np.radians(ray_angle)
-            ray_direction = [np.cos(ray_angle_rad), np.sin(ray_angle_rad)]
+            ray_direction = [np.sin(ray_angle_rad), -np.cos(ray_angle_rad)]  # Fixed direction calculation
             
             # Starting positions for parallel rays
-            center_y = (y_min + y_max) / 2
-            start_x = x_min - ray_start_distance
-            
-            for i in range(num_rays):
-                offset = (i - num_rays // 2) * ray_spacing
-                start_point = [start_x, center_y + offset]
+            if abs(ray_angle) > 45:  # Nearly vertical rays
+                # Start from above/below
+                center_x = (x_min + x_max) / 2
+                start_y = y_max + ray_start_distance if ray_angle < 0 else y_min - ray_start_distance
                 
-                ray_path = trace_ray_path(start_point, ray_direction, main_points, sub_points)
-                if len(ray_path) > 1:
-                    ray_data.append(ray_path)
+                for i in range(num_rays):
+                    offset = (i - num_rays // 2) * ray_spacing
+                    start_point = [center_x + offset, start_y]
+                    
+                    ray_path = trace_ray_path(start_point, ray_direction, main_points, sub_points)
+                    if len(ray_path) > 1:
+                        ray_data.append(ray_path)
+            else:  # Nearly horizontal rays
+                # Start from left/right
+                center_y = (y_min + y_max) / 2
+                start_x = x_min - ray_start_distance if ray_angle >= 0 else x_max + ray_start_distance
+                
+                for i in range(num_rays):
+                    offset = (i - num_rays // 2) * ray_spacing
+                    start_point = [start_x, center_y + offset]
+                    
+                    ray_path = trace_ray_path(start_point, ray_direction, main_points, sub_points)
+                    if len(ray_path) > 1:
+                        ray_data.append(ray_path)
         
         # Create plot
         fig = create_reflector_plot(
