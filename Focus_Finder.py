@@ -313,9 +313,107 @@ def generate_ellipse_curve(center, a, b, angle=0, num_points=100):
     
     return np.column_stack([x_ellipse, y_ellipse])
 
+def fit_polynomial_curve(points, degree=3):
+    """Fit polynomial curve to points - good for partial curves"""
+    if len(points) < degree + 1:
+        return None, None
+    
+    try:
+        x = points[:, 0]
+        y = points[:, 1]
+        
+        # Fit polynomial y = p(x)
+        coeffs = np.polyfit(x, y, degree)
+        poly_func = np.poly1d(coeffs)
+        
+        # For visualization, extend the curve slightly
+        x_min, x_max = np.min(x), np.max(x)
+        x_range = x_max - x_min
+        x_extended = np.linspace(x_min - x_range*0.2, x_max + x_range*0.2, 100)
+        y_extended = poly_func(x_extended)
+        
+        # Find approximate focus for polynomial (estimate)
+        # Use the vertex of the fitted curve
+        if degree >= 2:
+            # For quadratic and higher, find critical points
+            poly_deriv = np.polyder(poly_func)
+            critical_points = np.roots(poly_deriv)
+            
+            # Find real critical points within reasonable range
+            real_critical = []
+            for cp in critical_points:
+                if np.isreal(cp):
+                    cp_real = np.real(cp)
+                    if x_min - x_range <= cp_real <= x_max + x_range:
+                        real_critical.append(cp_real)
+            
+            if real_critical:
+                # Use the critical point closest to data center
+                x_center = np.mean(x)
+                best_cp = min(real_critical, key=lambda cp: abs(cp - x_center))
+                focus_x = best_cp
+                focus_y = poly_func(best_cp)
+                
+                # Estimate focal distance based on curvature
+                second_deriv = np.polyder(poly_deriv)
+                curvature = abs(second_deriv(best_cp))
+                if curvature > 1e-6:
+                    focal_offset = 1 / (4 * curvature)  # Approximate
+                    focus_y += focal_offset
+                
+                return (focus_x, focus_y), (coeffs, x_extended, y_extended)
+        
+        # Fallback: use center of data
+        focus_x = np.mean(x)
+        focus_y = np.mean(y)
+        return (focus_x, focus_y), (coeffs, x_extended, y_extended)
+        
+    except Exception as e:
+        return None, None
+
+def fit_ellipse_partial(points):
+    """Fit ellipse to partial curve data with better constraints"""
+    if len(points) < 5:
+        return None, None
+    
+    try:
+        x = points[:, 0]
+        y = points[:, 1]
+        
+        # For partial curves, use a simpler geometric approach
+        # Find approximate center from data bounds
+        x_center = (np.min(x) + np.max(x)) / 2
+        y_center = (np.min(y) + np.max(y)) / 2
+        
+        # Estimate semi-axes from data spread
+        # For partial ellipse, this is approximate
+        x_span = np.max(x) - np.min(x)
+        y_span = np.max(y) - np.min(y)
+        
+        # Assume the partial curve represents a significant portion
+        a = x_span * 1.5  # Semi-major axis estimate
+        b = y_span * 2.0  # Semi-minor axis estimate
+        
+        # Ensure a >= b
+        if b > a:
+            a, b = b, a
+        
+        # Calculate foci
+        if a > b and a > 0 and b > 0:
+            c = np.sqrt(a**2 - b**2)
+            focus1 = (x_center + c, y_center)
+            focus2 = (x_center - c, y_center)
+        else:
+            focus1 = focus2 = (x_center, y_center)
+        
+        return (focus1, focus2), (x_center, y_center, a, b, 0)
+        
+    except:
+        return None, None
+
 def create_reflector_plot(main_points, sub_points, main_type, sub_type, 
                          main_focus, sub_foci, show_rays=False, ray_data=None,
-                         sub_params=None):
+                         sub_params=None, fitted_curve=None):
     """Create interactive plot of dual reflector system"""
     
     fig = go.Figure()
@@ -338,28 +436,39 @@ def create_reflector_plot(main_points, sub_points, main_type, sub_type,
             y=sub_points[:, 1],
             mode='lines+markers',
             name=f'Sub Reflector ({sub_type}) - Data',
-            line=dict(color='red', width=3),
-            marker=dict(size=4)
+            line=dict(color='red', width=4),
+            marker=dict(size=6, color='red')
         ))
     
-    # Plot fitted ellipse for sub-reflector if it's an ellipse
-    if sub_type == "Ellipse" and sub_params is not None:
-        if len(sub_params) == 5:  # Full parameters with rotation
-            h, k, a, b, theta = sub_params
-        else:  # Simple parameters
-            h, k, a, b = sub_params
-            theta = 0
+    # Plot fitted curve based on type
+    if fitted_curve is not None:
+        if sub_type == "Polynomial":
+            coeffs, x_extended, y_extended = fitted_curve
+            fig.add_trace(go.Scatter(
+                x=x_extended,
+                y=y_extended,
+                mode='lines',
+                name=f'Fitted {sub_type}',
+                line=dict(color='cyan', width=2, dash='dash'),
+                opacity=0.8
+            ))
+        elif sub_type == "Ellipse" and sub_params is not None:
+            if len(sub_params) == 5:  # Full parameters with rotation
+                h, k, a, b, theta = sub_params
+            else:  # Simple parameters
+                h, k, a, b = sub_params
+                theta = 0
+                
+            ellipse_points = generate_ellipse_curve((h, k), a, b, theta)
             
-        ellipse_points = generate_ellipse_curve((h, k), a, b, theta)
-        
-        fig.add_trace(go.Scatter(
-            x=ellipse_points[:, 0],
-            y=ellipse_points[:, 1],
-            mode='lines',
-            name='Fitted Ellipse (Full)',
-            line=dict(color='pink', width=2, dash='dash'),
-            opacity=0.7
-        ))
+            fig.add_trace(go.Scatter(
+                x=ellipse_points[:, 0],
+                y=ellipse_points[:, 1],
+                mode='lines',
+                name='Fitted Ellipse (Full)',
+                line=dict(color='pink', width=2, dash='dash'),
+                opacity=0.7
+            ))
     
     # Plot main reflector focus
     if main_focus is not None:
@@ -368,7 +477,7 @@ def create_reflector_plot(main_points, sub_points, main_type, sub_type,
             y=[main_focus[1]],
             mode='markers',
             name='Main Focus',
-            marker=dict(size=12, color='yellow', symbol='star')
+            marker=dict(size=14, color='yellow', symbol='star')
         ))
     
     # Plot sub reflector foci
@@ -379,7 +488,7 @@ def create_reflector_plot(main_points, sub_points, main_type, sub_type,
                 y=[sub_foci[0][1], sub_foci[1][1]],
                 mode='markers',
                 name='Sub Foci',
-                marker=dict(size=10, color='orange', symbol='diamond')
+                marker=dict(size=12, color='orange', symbol='diamond')
             ))
             
             # Add lines connecting the foci
@@ -391,13 +500,13 @@ def create_reflector_plot(main_points, sub_points, main_type, sub_type,
                 line=dict(color='orange', width=1, dash='dot'),
                 showlegend=False
             ))
-        else:  # Single focus (parabola)
+        else:  # Single focus (parabola/polynomial)
             fig.add_trace(go.Scatter(
                 x=[sub_foci[0]],
                 y=[sub_foci[1]],
                 mode='markers',
                 name='Sub Focus',
-                marker=dict(size=10, color='orange', symbol='diamond')
+                marker=dict(size=12, color='orange', symbol='diamond')
             ))
     
     # Add axis of symmetry
@@ -415,8 +524,11 @@ def create_reflector_plot(main_points, sub_points, main_type, sub_type,
             showlegend=False
         ))
     
+    # Determine title based on sub type
+    curve_desc = "Polynomial Fit" if sub_type == "Polynomial" else "Ellipse Fit"
+    
     fig.update_layout(
-        title='Dual Reflector System Analysis - With Improved Ellipse Fit',
+        title=f'Dual Reflector System Analysis - {curve_desc}',
         xaxis_title='X (mm)',
         yaxis_title='Y (mm)',
         template='plotly_dark',
@@ -565,7 +677,7 @@ def main():
         "Rotate Entire System (°):",
         min_value=-180,
         max_value=180,
-        value=90,  # Default to 90° clockwise
+        value=-90,  # Default to -90° 
         step=5,
         help="Rotate the entire coordinate system (both reflectors together)"
     )
@@ -577,7 +689,7 @@ def main():
     
     sub_type = st.sidebar.selectbox(
         "Sub Reflector Type:",
-        ["Ellipse", "Hyperbola", "Parabola"]  # Default to Ellipse first
+        ["Polynomial", "Ellipse", "Hyperbola", "Parabola"]  # Add polynomial option
     )
     
     # Apply global rotation to both reflectors
