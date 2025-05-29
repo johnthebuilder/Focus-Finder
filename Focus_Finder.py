@@ -854,16 +854,49 @@ def create_reflector_plot(main_points, sub_points, main_type, sub_type,
                 ray_x = [p[0] for p in ray_path]
                 ray_y = [p[1] for p in ray_path]
                 
-                # Force simple ray display
-                fig.add_trace(go.Scatter(
-                    x=ray_x,
-                    y=ray_y,
-                    mode='lines+markers',
-                    name=f'Test Ray {i+1}',
-                    line=dict(color='red', width=4),  # Thick red lines
-                    marker=dict(size=8, color='yellow'),  # Big yellow markers
-                    showlegend=True
-                ))
+                # Better ray display with segments
+                if len(ray_path) >= 3:
+                    # Incident ray (to main reflector)
+                    fig.add_trace(go.Scatter(
+                        x=[ray_x[0], ray_x[1]],
+                        y=[ray_y[0], ray_y[1]],
+                        mode='lines',
+                        name=f'Incident' if i == 0 else None,
+                        line=dict(color='cyan', width=3),
+                        showlegend=(i == 0)
+                    ))
+                    
+                    if len(ray_path) >= 4:
+                        # Reflected ray (main to sub)
+                        fig.add_trace(go.Scatter(
+                            x=[ray_x[1], ray_x[2]],
+                            y=[ray_y[1], ray_y[2]],
+                            mode='lines',
+                            name=f'Main→Sub' if i == 0 else None,
+                            line=dict(color='yellow', width=3),
+                            showlegend=(i == 0)
+                        ))
+                        
+                        # Final ray (sub to focus)
+                        fig.add_trace(go.Scatter(
+                            x=[ray_x[2], ray_x[3]],
+                            y=[ray_y[2], ray_y[3]],
+                            mode='lines',
+                            name=f'Final' if i == 0 else None,
+                            line=dict(color='lime', width=3),
+                            showlegend=(i == 0)
+                        ))
+                else:
+                    # Simple ray
+                    fig.add_trace(go.Scatter(
+                        x=ray_x,
+                        y=ray_y,
+                        mode='lines+markers',
+                        name=f'Ray {i+1}',
+                        line=dict(color='red', width=3),
+                        marker=dict(size=6, color='yellow'),
+                        showlegend=(i == 0)
+                    ))
                 
                 st.sidebar.write(f"Ray {i+1}: {len(ray_path)} points")
     else:
@@ -1186,9 +1219,9 @@ def main():
         fitted_curve = None
         
         if sub_type == "Force Ellipse":
-            sub_foci, sub_params = fit_ellipse_force(sub_points)
+            sub_foci, sub_params = fit_ellipse_better(sub_points)
         elif sub_type == "Ellipse":
-            sub_foci, sub_params = fit_ellipse_through_points(sub_points)
+            sub_foci, sub_params = fit_ellipse_better(sub_points)
         elif sub_type == "Polynomial":
             sub_foci, fitted_curve = fit_polynomial_curve(sub_points, degree=3)
         
@@ -1215,13 +1248,8 @@ def main():
                 offset = (i - num_rays // 2) * ray_spacing
                 start_point = [center_x + offset, start_y]
                 
-                # Simple ray path for debugging
-                ray_path = [
-                    start_point,
-                    [start_point[0], start_point[1] - 10],  # Drop down 10 units
-                    [start_point[0] + 2, start_point[1] - 15],  # Move right and down
-                    [start_point[0] + 5, start_point[1] - 20]   # Final point
-                ]
+                # Use simpler ray tracing
+                ray_path = simple_ray_trace(start_point, ray_direction, main_points, sub_points)
                 ray_data.append(ray_path)
             
             st.sidebar.success(f"✅ Generated {len(ray_data)} test rays")
